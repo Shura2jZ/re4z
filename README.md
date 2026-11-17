@@ -7,8 +7,7 @@ Le monde et l'IA viennent de RE4 (village r400-r4FF). BO1Z.asi gele les surplus,
 ## Structure
 - src/re4z/ - source de BO1Z.asi (HUD, perks, voicelines, intro, vagues)
 - src/mw2re4/ - source de MW2RE4.asi (hote MW2, degats, perks)
-- PROJET-NOTES.md - journal projet (FR)
-- HANDOVER.md - prompt de reprise pour un nouvel agent
+- PROJECT-NOTES.md - journal projet (FR)
 
 ## Build
 - BO1Z : src/re4z/build_hudonly.bat (MinGW i386, g++ -m32 -std=c++17). Produit BO1Z_new.asi a renommer en BO1Z.asi.
@@ -19,4 +18,4 @@ Le monde et l'IA viennent de RE4 (village r400-r4FF). BO1Z.asi gele les surplus,
 - Injection via .asi charges par le runtime, pas de client IW4X direct.
 - Notes en francais.
 
-Voir HANDOVER.md pour l'etat detaille et la suite.
+Voir PROJECT-NOTES.md pour l'etat detaille et la suite.

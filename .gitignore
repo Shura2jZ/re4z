@@ -1,0 +1,19 @@
+# Ignore everything by default
+*
+
+# Allow the source tree (only code + build scripts)
+!src/
+!src/**
+# ...but not binaries / objects produced inside src
+src/**/*.asi
+src/**/*.o
+src/**/*.obj
+src/**/*.exe
+src/**/*.dll
+src/**/*.lib
+
+# Allow docs
+!README.md
+!PROJECT-NOTES.md
+!.gitignore
+!test_composite.bat
