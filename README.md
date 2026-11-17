@@ -16,7 +16,7 @@ What works so far:
 - Tank Dempsey kill voice lines.
 - Authentic BO1 weapon sounds and HUD fonts extracted from the game files.
 
-What does NOT work yet:
+What does not work yet:
 - Bottle-drinking animation for perks.
 - Pack-a-Punch.
 - Real wave spawning driven by the BO1 round budget.
@@ -25,17 +25,18 @@ What does NOT work yet:
 - Some zombies render invisible while the MW2 runtime is active (under investigation).
 - Intermittent damage (some shots do not kill) — under investigation.
 
-## How it works
-
-RE4 Mercenaries (rooms r400-r4FF, r400 = village) provides the world and the AI. `BO1Z.asi` freezes surplus enemies, scales their health per round, counts kills and draws the BO1 HUD (D3D9 hook). `MW2RE4.asi` (host) provides the MW2 first-person view, damage and perk effects. The MW2 runtime (`iw4l-re4.exe`) is a precompiled Rust/Bevy renderer used for assets and compositing; it is not rebuilt.
-
 ## Building
 
-- BO1Z: `src/re4z/build_hudonly.bat` (MinGW i386, g++ -m32 -std=c++17). Produces `BO1Z_new.asi`, rename to `BO1Z.asi`.
-- Host: `g++ -m32 -std=c++17 -O2 -shared -static -static-libgcc -static-libstdc++ -o MW2RE4_new.asi MW2RE4_new.cpp -lgdi32 -luser32` (from `src/mw2re4`).
+The project uses MinGW (i386). From `src/re4z/`, run `build_hudonly.bat` to build `BO1Z.asi`. From `src/mw2re4/`, compile `MW2RE4_new.cpp` with g++ (see the build command in the source). The precompiled MW2 runtime (`iw4l-re4.exe`) is not rebuilt.
+
+## Credits
+
+- **IW4L pipeline** — the Rust/Bevy runtime used for asset loading and compositing.
+- **MW2RE4** — the MW2-in-RE4 mod whose architecture (host ASI + runtime bridge, shooting, HUD compositing) this project reuses and is inspired by.
+- **GrayWolf** by Kenshin9977 — used to extract Black Ops 1 assets (sounds, images) from the game files.
+- Black Ops 1 / Resident Evil 4 — their respective owners.
 
 ## Notes
 
 - Notes and journal are kept in French in `PROJET-NOTES.md`.
-- Do not launch the game yourself; tests are run by the user on request.
 - BO1 assets are extracted from the user's own Black Ops 1 install via GrayWolf; they are not redistributed.
