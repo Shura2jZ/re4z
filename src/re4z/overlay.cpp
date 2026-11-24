@@ -41,6 +41,7 @@ IDirect3DTexture9* g_perkTex[4] = { nullptr, nullptr, nullptr, nullptr };
 IDirect3DTexture9* g_boxWeaponTex[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
 // Real BO1 wall-buy chalk drawings (black background made transparent in the DDS alpha).
 IDirect3DTexture9* g_chalkTex[3] = { nullptr, nullptr, nullptr };
+IDirect3DTexture9* g_powerupTex[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
 IDirect3DTexture9* g_lowHealthTex = nullptr;
 IDirect3DTexture9* g_compassHealthTex = nullptr;
 bool g_perkActive[4] = { false, false, false, false };
@@ -316,6 +317,9 @@ void Overlay_OnReset() {
     for (IDirect3DTexture9*& t : g_chalkTex) {
         if (t) { t->Release(); t = nullptr; }
     }
+    for (IDirect3DTexture9*& t : g_powerupTex) {
+        if (t) { t->Release(); t = nullptr; }
+    }
 }
 
 // Export used by the MW2RE4 host's Present hook: the host owns device vtable
@@ -384,6 +388,32 @@ void Overlay_DrawWorldModels(IDirect3DDevice9* device) {
         const float wy = anch[1] + 1100.0f;      // ~1.1 m high
         const float wz = anch[2] + (i - 1) * 1400.0f;
         WorldModel_DrawBillboard(device, g_chalkTex[i], wx, wy, wz, 1.57f, 900.0f, 450.0f);
+    }
+
+    // BO1 power-ups: glowing billboards in the 3D world, spinning above the
+    // ground until the player walks over them.
+    static const char* kPowerupTex[5] = {
+        "hud/powerups/specialty_instakill_zombies.dds",
+        "hud/powerups/zom_medals_skull_full.dds",
+        "hud/powerups/zombie_ammo_box_n.dds",
+        "hud/powerups/specialty_2x_zombies.dds",
+        "hud/powerups/specialty_firesale_zombies.dds"
+    };
+    for (int i = 0; i < 8; ++i) {
+        const PowerupDrop& d = z.drops[i];
+        if (!d.active || d.type < 0 || d.type >= 5) continue;
+        IDirect3DTexture9*& tex = g_powerupTex[d.type];
+        if (!tex) {
+            char full[MAX_PATH];
+            if (BuildAssetPath(full, sizeof(full), kPowerupTex[d.type]))
+                tex = LoadDdsTexture(device, full);
+        }
+        if (!tex) continue;
+        const float spin = d.age * 2.0f;
+        const float bob = 120.0f * sinf(spin);
+        const float scale = 420.0f + 60.0f * sinf(spin * 2.0f);
+        WorldModel_DrawBillboard(device, tex, d.x, d.y + 420.0f + bob, d.z,
+                                 spin, scale, scale);
     }
 }
 
@@ -642,6 +672,22 @@ void Overlay_Render(IDirect3DDevice9* device) {
             device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
             device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, q, sizeof(TQV));
             device->SetTexture(0, nullptr);
+        }
+
+        // Active power-up logos along the bottom of the screen with their
+        // remaining time (BO1 puts them under the perk badges).
+        {
+            static const char* kPwName[5] = { "INSTA KILL", "NUKE", "MAX AMMO", "DOUBLE POINTS", "FIRE SALE" };
+            int shown = 0;
+            for (int i = 0; i < 5; ++i) {
+                if (z.powerupTime[i] <= 0) continue;
+                snprintf(buf, sizeof(buf), "%s %d", kPwName[i], z.powerupTime[i]);
+                AddTextCondensed(text, 51.2f * refScale,
+                                 (375.0f + shown * 18.0f) * uiScale, buf,
+                                 D3DCOLOR_ARGB(255, 240, 220, 40), kBo1FontNormalDef,
+                                 7.0f * uiScale, 4.8f * refScale);
+                ++shown;
+            }
         }
 
         // Pack-a-Punch feedback: small label under the round number, not over

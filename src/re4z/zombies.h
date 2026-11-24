@@ -2,6 +2,13 @@
 
 #include "common.h"
 
+struct PowerupDrop {
+    bool active = false;
+    int type = 0;
+    float x = 0, y = 0, z = 0;
+    float age = 0.0f;
+};
+
 // Read-only Zombies HUD state. Everything here is derived from the running RE4
 // session (global game work + EmMgr); no game memory is modified.
 struct ZombiesHud {
@@ -50,6 +57,10 @@ struct ZombiesHud {
     bool boxWaiting = false;   // chosen weapon hovering, F to take it
     float boxSpin = 0.0f;
     int boxResult = 0;
+    // BO1 power-ups: seconds remaining (0 = inactive), 0 insta, 1 nuke,
+    // 2 max ammo, 3 double points, 4 fire sale.
+    int powerupTime[5] = {};
+    PowerupDrop drops[8] = {};
 };
 
 void Zombies_Update();

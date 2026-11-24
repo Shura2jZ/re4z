@@ -51,6 +51,48 @@ static void DempseyVox(const char* cat, int maxN, int& idx) {
     Log("vox: %s", f);
 }
 
+// Dropped power-ups (spawn on kill, walk over to collect).
+struct DroppedPowerup {
+    bool active = false;
+    int type = 0;
+    float x = 0, y = 0, z = 0;
+    DWORD born = 0;
+};
+static DroppedPowerup g_drops[8];
+static DWORD g_powerupEnd[5] = {};
+static const char* kPowerupVox[5] = {
+    "insta", "nuke", "ammo", "double", "firesale"
+};
+
+static int PowerupSpawn(float x, float y, float z) {
+    for (DroppedPowerup& d : g_drops) {
+        if (d.active) continue;
+        d.active = true;
+        d.type = rand() % 5;
+        d.x = x + ((float)(rand() % 1200) - 600.0f);
+        d.y = y;
+        d.z = z + ((float)(rand() % 1200) - 600.0f);
+        d.born = GetTickCount();
+        MciPlay("pwspawn", "bo1_mysterybox_move.wav");
+        MciPlay("halo", "pwhalo.wav");
+        Log("powerup: spawned type %d at (%.0f %.0f)", d.type, d.x, d.z);
+        return d.type;
+    }
+    return -1;
+}
+
+static void PowerupCollect(int type) {
+    static int voxIdx[5] = {};
+    g_powerupEnd[type] = GetTickCount() + 30000;
+    char vox[64];
+    snprintf(vox, sizeof(vox), "powerup_%s", kPowerupVox[type]);
+    int n = (type == 3 || type == 4) ? 3 : ((type == 1) ? 4 : 3);
+    DempseyVox(vox, n, voxIdx[type]);
+    MciPlay("pwgrab", "bo1_perk_drink.wav");
+    if (type == 4) MciPlay("firesale", "bo1_mysterybox_music.wav");
+    Log("powerup: collected type %d, active 30s", type);
+}
+
 } // namespace
 
 ZombiesHud g_hud;
@@ -234,6 +276,8 @@ bool g_perkMenu = false;
 bool g_boxSpinning = false;
 DWORD g_boxSpinStart = 0;
 bool g_boxWaiting = false;   // chosen weapon hovering: press F to take it
+DWORD g_perkVoxAt = 0;          // deferred perk voice line (after drink + burp)
+const char* g_perkVoxCat = nullptr;
 int g_boxResult = 0;  // index into the box weapon list
 // Pack-a-Punch: 5000 points, upgrades the equipped weapon to its _upgraded row.
 bool g_packaPunched = false;
@@ -556,8 +600,12 @@ bool ApplyPerkBuy(ZombiesHud& h, int slot) {
         MciPlay("sting", kPerks[slot].sting);
     // Dempsey quip on perk purchase (one variant per perk).
     static const char* kPerkVox[4] = { "perk_jugga", "perk_revive", "perk_speed", "perk_doubletap" };
-    static int kPerkVoxIdx[4] = {};
-    if (slot >= 0 && slot < 4) DempseyVox(kPerkVox[slot], 1, kPerkVoxIdx[slot]);
+    if (slot >= 0 && slot < 4) {
+        // Dempsey comments after the 3 s bottle-drink animation and the gulp,
+        // not on the purchase frame.
+        g_perkVoxAt = GetTickCount() + 3000;
+        g_perkVoxCat = kPerkVox[slot];
+    }
     // Play the 3D bottle-drink animation in the runtime (also works for F8 buys).
     if (!g_mw2PlayPerkAnim) g_mw2PlayPerkAnim = ResolvePlayPerkAnim();
     if (g_mw2PlayPerkAnim) g_mw2PlayPerkAnim(slot);
@@ -704,7 +752,9 @@ void Zombies_Update() {
     // BO1 solo scoring (_zombiemode.gsc:575, :585):
     //   zombie_score_kill_1player = 50, zombie_score_damage_normal = 10.
     // Every award is rounded up to a multiple of 5 (round_up_score).
-    h.points = g_kills * kZombieScoreKill1Player + g_hits * kZombieScoreDamageNormal - g_pointsSpent;
+    int earned = g_kills * kZombieScoreKill1Player + g_hits * kZombieScoreDamageNormal;
+    if (g_powerupEnd[3] > GetTickCount()) earned *= 2;  // Double Points
+    h.points = earned - g_pointsSpent;
     // Infinite points for testing: toggle with F6 (and in BO1Z.ini [BO1Z] InfinitePoints=1).
     if (g_infinitePoints)
         h.points = 999999;
@@ -931,6 +981,14 @@ void Zombies_Update() {
         g_packaPendingRow = 0;
     }
 
+    // Deferred perk voice line: fires at the end of the drink animation/gulp.
+    if (g_perkVoxCat && g_perkVoxAt && GetTickCount() >= g_perkVoxAt) {
+        static int g_perkVoxIdx = 0;
+        DempseyVox(g_perkVoxCat, 1, g_perkVoxIdx);
+        g_perkVoxCat = nullptr;
+        g_perkVoxAt = 0;
+    }
+
     // Mystery Box: after ~2.5 s of 3D weapons spinning, the chosen gun hovers
     // above the open box until the player presses F.
     if (g_boxSpinning && GetTickCount() - g_boxSpinStart >= 2500) {
@@ -1002,6 +1060,42 @@ void Zombies_Update() {
             (*pIdx) = ((*pIdx) + 1) % maxN;
             PlayGameSound(vox);
             Log("vox: %s (kills=%d, deadNow=%d)", vox, g_kills, deadNow);
+        }
+        // Power-ups drop from killed zombies and are collected by walking over them.
+        if (deadNow > 0 && (rand() % 12) == 0) {
+            Vec3 pp{};
+            if (ReadPlayerPos(&pp)) PowerupSpawn(pp.x, pp.y, pp.z);
+        }
+    }
+    {
+        Vec3 pp{};
+        const bool havePos = ReadPlayerPos(&pp);
+        const DWORD nowT = GetTickCount();
+        bool anyDrop = false;
+        for (DroppedPowerup& d : g_drops) {
+            if (!d.active) continue;
+            if (nowT - d.born > 30000) { d.active = false; continue; }
+            anyDrop = true;
+            if (havePos) {
+                const float dx = pp.x - d.x, dz = pp.z - d.z;
+                if (dx * dx + dz * dz < 400.0f * 400.0f) {
+                    d.active = false;
+                    PowerupCollect(d.type);
+                }
+            }
+        }
+        if (!anyDrop) mciSendStringA("close halo", nullptr, 0, nullptr);
+        for (int i = 0; i < 5; ++i) {
+            const DWORD endT = g_powerupEnd[i];
+            h.powerupTime[i] = endT > nowT ? (int)((endT - nowT) / 1000) : 0;
+        }
+        for (int i = 0; i < 8; ++i) {
+            h.drops[i].active = g_drops[i].active;
+            h.drops[i].type = g_drops[i].type;
+            h.drops[i].x = g_drops[i].x;
+            h.drops[i].y = g_drops[i].y;
+            h.drops[i].z = g_drops[i].z;
+            h.drops[i].age = g_drops[i].active ? (float)(nowT - g_drops[i].born) / 1000.0f : 0.0f;
         }
     }
     h.kills = g_kills;
