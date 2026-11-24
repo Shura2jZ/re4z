@@ -1062,7 +1062,7 @@ void Zombies_Update() {
             Log("vox: %s (kills=%d, deadNow=%d)", vox, g_kills, deadNow);
         }
         // Power-ups drop from killed zombies and are collected by walking over them.
-        if (deadNow > 0 && (rand() % 12) == 0) {
+        if (deadNow > 0) {  // 100% for testing
             Vec3 pp{};
             if (ReadPlayerPos(&pp)) PowerupSpawn(pp.x, pp.y, pp.z);
         }
