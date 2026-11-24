@@ -349,16 +349,17 @@ void Overlay_DrawWorldModels(IDirect3DDevice9* device) {
         WorldModel_DrawHinged(device, L"boxlid.r4m", bx, by + 445.0f, bz,
                               0.0f, -0.859f, pitch, box.scale, true);
         // Weapon: cycles quickly during the spin, then holds on the result.
-        static const wchar_t* kGuns[14] = {
+        static const wchar_t* kGuns[16] = {
             L"boxgun_1911.r4m", L"boxgun_mp5.r4m", L"boxgun_ak74u.r4m",
             L"boxgun_m14.r4m", L"boxgun_ithaca.r4m", L"boxgun_python.r4m",
             L"boxgun_raygun.r4m", L"boxgun_thundergun.r4m", L"boxgun_pm63.r4m",
             L"boxgun_spas.r4m", L"boxgun_hk21.r4m", L"boxgun_l96.r4m",
-            L"boxgun_dragunov.r4m", L"boxgun_ak47.r4m"
+            L"boxgun_dragunov.r4m", L"boxgun_ak47.r4m",
+            L"boxgun_tesla.r4m", L"boxgun_tesla_up.r4m"
         };
         const int idx = z.boxWaiting ? z.boxResult
-                                     : ((int)(spin * 70.0f) % 14);
-        if (idx >= 0 && idx < 14) {
+                                     : ((int)(spin * 80.0f) % 16);
+        if (idx >= 0 && idx < 16) {
             const float yaw = (float)(GetTickCount() % 3600) / 3600.0f * 6.283185f;
             WorldModel_DrawCentered(device, kGuns[idx], bx, by + 1250.0f, bz,
                                     yaw, 7.0f, true);

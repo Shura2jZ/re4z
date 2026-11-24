@@ -813,13 +813,14 @@ void Zombies_Update() {
                                 // BO1: the weapon sits above the open box until the
                                 // player presses the action key to take it.
                                 // Registry rows from bo1_catalog.h (T5 common_zombie).
-                                static const uint32_t kRows[14] = {
+                                static const uint32_t kRows[16] = {
                                     1239, 1248, 1196, 1235, 1230, 1255,
                                     1257, 1242, 1252, 1263, 1225, 1233,
-                                    1213, 1196
+                                    1213, 1196,
+                                    1257, 1256
                                 };
                                 if (!g_mw2EquipRow) g_mw2EquipRow = ResolveEquipRow();
-                                if (g_mw2EquipRow && g_boxResult >= 0 && g_boxResult < 14) {
+                                if (g_mw2EquipRow && g_boxResult >= 0 && g_boxResult < 16) {
                                     g_mw2EquipRow(kRows[g_boxResult]);
                                     Log("mystery box: took row %u", kRows[g_boxResult]);
                                 }
@@ -836,6 +837,8 @@ void Zombies_Update() {
                                     case 10: cat = "wpck_mg"; cnt = 9; break;
                                     case 12: cat = "wpck_sniper"; cnt = 6; break;
                                     case 13: cat = "wpck_smg"; cnt = 5; break;
+                                    case 14: cat = "wpck_favorite"; cnt = 6; break;  // tesla
+                                    case 15: cat = "wpck_favorite_upgrade"; cnt = 6; break;  // tesla upgraded
                                     default: cat = "wpck_favorite"; cnt = 6; break;
                                 }
                                 DempseyVox(cat, cnt, g_boxGrabVoxIdx);
@@ -847,7 +850,7 @@ void Zombies_Update() {
                                 g_pointsSpent += 950;
                                 g_boxSpinning = true;
                                 g_boxSpinStart = GetTickCount();
-                                g_boxResult = (int)(GetTickCount() % 14);
+                                g_boxResult = (int)(GetTickCount() % 16);
                                 MciPlay("boxmove", "bo1_mysterybox_move.wav");
                                 MciPlay("boxmusic", "bo1_mysterybox_jingle.wav");
                                 static int g_boxMoveVoxIdx = 0;
