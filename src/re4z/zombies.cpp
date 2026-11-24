@@ -1,6 +1,7 @@
 #include "zombies.h"
 #include "game.h"
 #include "log.h"
+#include "worldmachines.h"
 
 #include <cstring>
 #include <mmsystem.h>
@@ -217,6 +218,39 @@ bool g_perkOwned[4] = {};
 DWORD g_perkBoughtAt[4] = {};
 int g_pointsSpent = 0;
 bool g_perkMenu = false;
+// Mystery Box: lid opens, 3D weapons spin, then the chosen gun hovers until F.
+bool g_boxSpinning = false;
+DWORD g_boxSpinStart = 0;
+bool g_boxWaiting = false;   // chosen weapon hovering: press F to take it
+int g_boxResult = 0;  // index into the box weapon list
+// Pack-a-Punch: 5000 points, upgrades the equipped weapon to its _upgraded row.
+bool g_packaPunched = false;
+int g_packaWeaponId = 0;
+// Deferred equip of the upgraded weapon, sent after the knuckle-crack animation
+// (the runtime rejects a second request while the first is still pending).
+uint32_t g_packaPendingRow = 0;
+DWORD g_packaEquipAt = 0;
+using EquipRowFn = void(__cdecl*)(uint32_t);
+static EquipRowFn g_mw2EquipRow = nullptr;
+using PlayPerkAnimFn = void(__cdecl*)(int);
+static PlayPerkAnimFn g_mw2PlayPerkAnim = nullptr;
+static PlayPerkAnimFn ResolvePlayPerkAnim() {
+    if (HMODULE mw2 = GetModuleHandleA("MW2RE4.asi"))
+        return (PlayPerkAnimFn)GetProcAddress(mw2, "MW2RE4_PlayPerkAnim");
+    return nullptr;
+}
+static EquipRowFn ResolveEquipRow() {
+    if (HMODULE mw2 = GetModuleHandleA("MW2RE4.asi"))
+        return (EquipRowFn)GetProcAddress(mw2, "MW2RE4_EquipRow");
+    return nullptr;
+}
+using GetLastRowFn = uint32_t(__cdecl*)();
+static GetLastRowFn g_mw2GetLastEquippedBo1Row = nullptr;
+static GetLastRowFn ResolveGetLastEquippedBo1Row() {
+    if (HMODULE mw2 = GetModuleHandleA("MW2RE4.asi"))
+        return (GetLastRowFn)GetProcAddress(mw2, "MW2RE4_GetLastEquippedBo1Row");
+    return nullptr;
+}
 // The perk jingle is scheduled 0.8 s after the gulp sound (BO1 drinks, then the
 // jingle starts), and MCI lets the two overlap without cutting each other off.
 int g_pendingJingle = -1;
@@ -226,21 +260,31 @@ DWORD g_pendingJingleAt = 0;
 // the round-over sting for the whole 10 s before the next round roars in.
 int g_pendingRoundStart = 0;
 DWORD g_pendingRoundStartAt = 0;
+// HP-scale bookkeeping: track enemies already given the round's HP so each is
+// scaled exactly once (refilling wounded enemies each frame made them immortal).
+uint16_t g_hpScaledRoom = 0xFFFF;
+int g_hpScaledEnemyCount = 0;
+uintptr_t g_hpScaledEnemies[512] = {};
 
 // Isolation toggles for the MW2-runtime "zombies invisible except their hat"
 // bug: [BO1Z] FreezeCap and [BO1Z] IntroFreeze in the BO1Z.ini next to bio4.exe
 // (default 1 = on). FreezeCap=0 releases the max-alive pacing freeze entirely,
 // IntroFreeze=0 skips the 3.5 s map-intro hold, so a test can tell whether the
 // freeze bits or the render path hide the zombie bodies.
-bool g_freezeCapOn = true;
-bool g_introFreezeOn = true;
+// Freezing RE4 enemies interferes with their render/animation state in the
+// MW2 runtime. Keep both experimental freezes opt-in; they remain available
+// through BO1Z.ini for diagnosis.
+bool g_freezeCapOn = false;
+bool g_introFreezeOn = false;
+bool g_infinitePoints = false;  // F6 toggle / [BO1Z] InfinitePoints=1 in BO1Z.ini
 static void LoadIsolationToggles() {
     char exe[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, exe, MAX_PATH);
     if (char* slash = strrchr(exe, '\\')) *(slash + 1) = '\0';
     std::string ini = std::string(exe) + "BO1Z.ini";
-    g_freezeCapOn = GetPrivateProfileIntA("BO1Z", "FreezeCap", 1, ini.c_str()) != 0;
-    g_introFreezeOn = GetPrivateProfileIntA("BO1Z", "IntroFreeze", 1, ini.c_str()) != 0;
+    g_freezeCapOn = GetPrivateProfileIntA("BO1Z", "FreezeCap", 0, ini.c_str()) != 0;
+    g_introFreezeOn = GetPrivateProfileIntA("BO1Z", "IntroFreeze", 0, ini.c_str()) != 0;
+    g_infinitePoints = GetPrivateProfileIntA("BO1Z", "InfinitePoints", 0, ini.c_str()) != 0;
 }
 // BO1-style map intro: black screen over the freshly loaded stage, every zombie
 // held in place, then a fade-in. Turned off once the fade completes.
@@ -347,7 +391,17 @@ int ScanEnemies(void* player, int maxAlive, int targetHp, int* alivePtr, int* de
     }
     if (!IsRangeReadable(pArray, (size_t)nArray * stride)) return 0;
 
-    // Pass 1: collect the living enemies and apply the round health.
+    // Reset per-enemy HP bookkeeping when RE4 changes rooms; manager slots can
+    // be recycled between stages.
+    const uint8_t* game = (const uint8_t*)GetGame();
+    if (!game) return 0;
+    const uint16_t room = *(const uint16_t*)(game + 0x4F9C);
+    if (room != g_hpScaledRoom) {
+        g_hpScaledRoom = room;
+        g_hpScaledEnemyCount = 0;
+    }
+
+    // Pass 1: collect the living enemies.
     uint8_t* alive[256];
     bool frozen[256];
     int count = 0;
@@ -363,12 +417,30 @@ int ScanEnemies(void* player, int maxAlive, int targetHp, int* alivePtr, int* de
         alive[count] = em;
         frozen[count] = (beFlag & 4) != 0;
         ++count;
-        // BO1 gives every zombie the round's health. RE4 stages use their own
-        // value, so the enemy is scaled once when it is still at the default.
-        if (targetHp > 0 && hp < targetHp && hp <= kRe4EnemyDefaultHp) {
-            *(int16_t*)(em + kEmHp) = (int16_t)targetHp;
-        }
     }
+
+    // Set a newly observed enemy's BO1 round health once. Never top up an
+    // already-seen enemy: doing that each frame made wounded Ganados immortal.
+    uintptr_t currentHpScaled[512];
+    int currentHpScaledCount = 0;
+    for (int i = 0; i < count && currentHpScaledCount < 512; ++i) {
+        const uintptr_t address = (uintptr_t)alive[i];
+        bool alreadySeen = false;
+        for (int j = 0; j < g_hpScaledEnemyCount; ++j) {
+            if (g_hpScaledEnemies[j] == address) { alreadySeen = true; break; }
+        }
+        if (!alreadySeen) {
+            const int16_t hp = *(int16_t*)(alive[i] + kEmHp);
+            // RE4's ordinary Ganados enter with 1000 HP, while later-round
+            // zombies may need more than that. Set the initial value exactly
+            // once for each newly seen enemy; never refill it on later scans.
+            if (targetHp > hp && hp > 0 && hp <= kRe4EnemyDefaultHp && targetHp <= 32767)
+                *(int16_t*)(alive[i] + kEmHp) = (int16_t)targetHp;
+        }
+        currentHpScaled[currentHpScaledCount++] = address;
+    }
+    memcpy(g_hpScaledEnemies, currentHpScaled, (size_t)currentHpScaledCount * sizeof(uintptr_t));
+    g_hpScaledEnemyCount = currentHpScaledCount;
 
     // Pass 2: spawn pacing. The surplus is frozen, the frozen ones are
     // released as the others die. A negative maxAlive means the BO1 map intro:
@@ -440,6 +512,96 @@ void Zombies_PerkInfo(int slot, const char** name, int* cost, bool* owned) {
     if (owned) *owned = g_perkOwned[slot];
 }
 
+bool ApplyPerkBuy(ZombiesHud& h, int slot);
+void PackaPunch(ZombiesHud& h);
+
+extern "C" __declspec(dllexport) bool __cdecl Zombies_BuyPerk(int slot) {
+    return ApplyPerkBuy(g_hud, slot);
+}
+
+// Apply a perk purchase to a ZombiesHud (used both by the export and by the
+// in-game 1-4 keys). Returns true on success.
+bool ApplyPerkBuy(ZombiesHud& h, int slot) {
+    if (slot == 4) { // knuckle crack sentinel: trigger Pack-a-Punch
+        PackaPunch(h);
+        return true;
+    }
+    if (slot < 0 || slot > 3) return false;
+    if (!h.inGame) return false;
+    if (g_perkOwned[slot]) return false;
+    if (h.points < kPerks[slot].cost) return false;
+    g_pointsSpent += kPerks[slot].cost;
+    h.points -= kPerks[slot].cost;
+    g_perkOwned[slot] = true;
+    g_perkBoughtAt[slot] = GetTickCount();
+    // The bottle-drink clip is a separate channel so it can overlap the perk sting.
+    MciPlay("drink", "bo1_perk_drink.wav");
+    if (kPerks[slot].sting)
+        MciPlay("sting", kPerks[slot].sting);
+    // Play the 3D bottle-drink animation in the runtime (also works for F8 buys).
+    if (!g_mw2PlayPerkAnim) g_mw2PlayPerkAnim = ResolvePlayPerkAnim();
+    if (g_mw2PlayPerkAnim) g_mw2PlayPerkAnim(slot);
+    if (g_mw2SetPerks) {
+        uint32_t mask = 0;
+        for (int j = 0; j < 4; ++j)
+            if (g_perkOwned[j]) mask |= kPerks[j].bit;
+        g_mw2SetPerks(mask);
+    }
+    Log("perk: bought %s for %d (points now %d)", kPerks[slot].name, kPerks[slot].cost, h.points);
+    return true;
+}
+
+// Pack-a-Punch: 5000 points, upgrades the equipped weapon to its _upgraded BO1 row.
+// itemId -> upgraded row mapping (RE4 itemId -> BO1 catalog row of the upgraded weapon).
+static int PackaPunchRowForWeaponId(int itemId) {
+    switch (itemId) {
+        case 0x23: return 1238u; // M1911 -> m1911 upgraded zm
+        case 0x24: return 1205u; // CZ75  -> cz75 upgraded zm
+        case 0x25:
+        case 0x26: return 1262u; // M870  -> spas upgraded zm
+        case 0x27:
+        case 0x28: return 1262u; // STRIKER -> spas upgraded zm
+        case 0x29: return 1234u; // RIFLE -> m14 upgraded zm
+        case 0x34: return 1242u; // ROCKET -> m72 law upgraded zm
+        default: return 0;
+    }
+}
+
+void PackaPunch(ZombiesHud& h) {
+    if (!h.inGame) return;
+    if (h.points < 5000) return;
+    if (!g_mw2EquipRow) g_mw2EquipRow = ResolveEquipRow();
+    if (!g_mw2GetLastEquippedBo1Row) g_mw2GetLastEquippedBo1Row = ResolveGetLastEquippedBo1Row();
+    if (!g_mw2EquipRow || !g_mw2GetLastEquippedBo1Row) return;
+    uint32_t equippedRow = g_mw2GetLastEquippedBo1Row();
+    uint32_t row = 0;
+    if (equippedRow >= 1195 && equippedRow <= 1273) {
+        // BO1 weapon equipped via F10: upgraded row is row - 1 (upgraded rows are odd,
+        // normal rows are even and just after in the catalog).
+        row = equippedRow - 1;
+        if ((row % 2) == 0) row = 0; // sanity: upgraded rows are odd
+    } else {
+        // Fallback: RE4 itemId -> upgraded row mapping.
+        row = (uint32_t)PackaPunchRowForWeaponId(h.weaponId);
+    }
+    if (row <= 0) return;
+    h.points -= 5000;
+    g_pointsSpent += 5000;
+    g_packaPunched = true;
+    g_packaWeaponId = h.weaponId;
+    // Knuckle-crack animation first (row 1269), then the upgraded weapon 0.7 s
+    // later so the runtime's request-ack handshake has time to clear.
+    g_mw2EquipRow(1269u);
+    g_packaPendingRow = row;
+    // Let the knuckle-crack animation finish before equipping the upgraded
+    // weapon, otherwise the equip cuts the animation halfway.
+    g_packaEquipAt = GetTickCount() + 1500;
+    // Authentic BO1 Pack-a-Punch refrain (the sting played on upgrade, not the
+    // full jingle that plays from the machine).
+    MciPlay("packa", "bo1_packapunch_sting.wav");
+    Log("packa-punch: equipped row %u -> knuckle crack -> upgraded row %u (points now %d)", equippedRow, row, h.points);
+}
+
 void Zombies_Update() {
     static bool togglesLoaded = false;
     if (!togglesLoaded) {
@@ -453,6 +615,15 @@ void Zombies_Update() {
         Log("spawn pacing: %s", g_spawnPacing ? "ON" : "OFF");
     }
     prevF7 = f7;
+
+    // F6: toggle infinite points (for testing without grinding).
+    static bool prevF6 = false;
+    const bool f6 = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
+    if (f6 && !prevF6) {
+        g_infinitePoints = !g_infinitePoints;
+        Log("infinite points: %s", g_infinitePoints ? "ON" : "OFF");
+    }
+    prevF6 = f6;
 
     // F8: toggle the Perk-a-Cola buy menu.
     static bool prevB = false;
@@ -508,6 +679,9 @@ void Zombies_Update() {
     //   zombie_score_kill_1player = 50, zombie_score_damage_normal = 10.
     // Every award is rounded up to a multiple of 5 (round_up_score).
     h.points = g_kills * kZombieScoreKill1Player + g_hits * kZombieScoreDamageNormal - g_pointsSpent;
+    // Infinite points for testing: toggle with F6 (and in BO1Z.ini [BO1Z] InfinitePoints=1).
+    if (g_infinitePoints)
+        h.points = 999999;
     h.health = *(const uint16_t*)(g + 0x4FA4);
     h.maxHealth = *(const uint16_t*)(g + 0x4FA6);
     h.weaponNo = *(const uint8_t*)(g + 0x4FB0);
@@ -533,16 +707,91 @@ void Zombies_Update() {
     }
     h.inGame = (mercRoom || g_forceInGame) && stopFlg != 0xFFFFFFFF;
 
+    // Minimal machine collision + interaction: push Leon out of a small radius
+    // around each machine, and let F buy/interact when close.
+    if (h.inGame) {
+        uint8_t* pl = (uint8_t*)GetPlayer();
+        if (pl && IsRangeReadable(pl, 0xA8)) {
+            float* feet = (float*)(pl + 0x94);
+            const float R = 900.0f;  // ~0.9 m collision radius
+            const WorldMachine* machines = WorldMachines();
+            float anch[3]; WorldMachines_Anchor(anch);
+            if (std::isfinite(feet[0]) && std::isfinite(feet[2])) {
+                for (int i = 0; i < WM_COUNT; ++i) {
+                    const float mx = anch[0] + machines[i].offX;
+                    const float mz = anch[2] + machines[i].offZ;
+                    float dx = feet[0] - mx, dz = feet[2] - mz;
+                    float d = sqrtf(dx*dx + dz*dz);
+                    if (d < R && d > 0.001f) {
+                        const float push = (R - d) / d;
+                        feet[0] += dx * push;
+                        feet[2] += dz * push;
+                    }
+                }
+            }
+            // Interaction: F near a machine (radius ~1.8 m).
+            static bool prevFKey = false;
+            const bool fk = (GetAsyncKeyState('F') & 0x8000) != 0;
+            if (fk && !prevFKey) {
+                int nearIdx = WorldMachines_Near(feet[0], feet[2], 1800.0f);
+                WorldMachines_Interact(nearIdx);
+                if (nearIdx >= 0) {
+                    switch (WorldMachine_Type(nearIdx)) {
+                        case WM_JUGGERNOG:   ApplyPerkBuy(h, 0); break;
+                        case WM_QUICKREVIVE: ApplyPerkBuy(h, 1); break;
+                        case WM_SPEEDCOLA:   ApplyPerkBuy(h, 2); break;
+                        case WM_DOUBLETAP:   ApplyPerkBuy(h, 3); break;
+                        case WM_PACKAPUNCH:  PackaPunch(h); break;
+                        case WM_MYSTERY_BOX: {
+                            if (g_boxWaiting) {
+                                // BO1: the weapon sits above the open box until the
+                                // player presses the action key to take it.
+                                // Registry rows from bo1_catalog.h (T5 common_zombie).
+                                static const uint32_t kRows[14] = {
+                                    1239, 1248, 1196, 1235, 1230, 1255,
+                                    1257, 1242, 1252, 1263, 1225, 1233,
+                                    1213, 1196
+                                };
+                                if (!g_mw2EquipRow) g_mw2EquipRow = ResolveEquipRow();
+                                if (g_mw2EquipRow && g_boxResult >= 0 && g_boxResult < 14) {
+                                    g_mw2EquipRow(kRows[g_boxResult]);
+                                    Log("mystery box: took row %u", kRows[g_boxResult]);
+                                }
+                                g_boxWaiting = false;
+                                mciSendStringA("close boxmusic", nullptr, 0, nullptr);
+                                MciPlay("boxgrab", "bo1_mysterybox_move.wav");
+                            } else if (!g_boxSpinning && h.points >= 950) {
+                                h.points -= 950;
+                                g_pointsSpent += 950;
+                                g_boxSpinning = true;
+                                g_boxSpinStart = GetTickCount();
+                                g_boxResult = (int)(GetTickCount() % 14);
+                                MciPlay("boxmove", "bo1_mysterybox_move.wav");
+                                MciPlay("boxmusic", "bo1_mysterybox_jingle.wav");
+                                Log("mystery box: spin start, result=%d", g_boxResult);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            prevFKey = fk;
+        }
+    }
+
     // DPF_COCKPIT = bit 15 of pG->Disp_flg. Clearing it hides the native RE4 HUD
     // (life meter, ammo, timer); the game restores it on room changes, so keep it
     // cleared every frame while the BO1 HUD is active. Only undo our own hide,
     // otherwise we would reveal the HUD during intentional cutscene hides.
+    // DPF_COCKPIT = 0x00010000 (bit 16) of g+0x58 = "RE4 HUD hidden". The MW2
+    // host also sets it. Set it to hide RE4's native HUD (HP bar, health) so
+    // only the BO1 HUD we draw remains. (Was wrongly using bit 15 before.)
     LONG* dispFlg = (LONG*)((uint8_t*)pG + 0x58);
     if (h.inGame && g_hideNativeHud) {
-        InterlockedAnd(dispFlg, ~(LONG)(1u << 15));
+        InterlockedOr(dispFlg, (LONG)0x00010000u);
         g_hudClearedByUs = true;
     } else if (g_hudClearedByUs) {
-        InterlockedOr(dispFlg, (LONG)(1u << 15));
+        InterlockedAnd(dispFlg, ~(LONG)0x00010000u);
         g_hudClearedByUs = false;
     }
 
@@ -575,25 +824,32 @@ void Zombies_Update() {
     static bool prevDigit[4] = {};
     for (int i = 0; i < 4; ++i) {
         const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
-        if (d && !prevDigit[i] && g_perkMenu && h.inGame && !g_perkOwned[i] && h.points >= kPerks[i].cost) {
-            g_pointsSpent += kPerks[i].cost;
-            h.points -= kPerks[i].cost;
-            g_perkOwned[i] = true;
-            g_perkBoughtAt[i] = GetTickCount();
-            // BO1: the perk sting (the "refrain" you hear while drinking) plays
-            // as you drink; the full jingle only plays on the machine itself.
-            // MCI keeps it on its own channel so a kill quip can't cut it off.
-            if (kPerks[i].sting)
-                MciPlay("sting", kPerks[i].sting);
-            if (g_mw2SetPerks) {
-                uint32_t mask = 0;
-                for (int j = 0; j < 4; ++j)
-                    if (g_perkOwned[j]) mask |= kPerks[j].bit;
-                g_mw2SetPerks(mask);
-            }
-            Log("perk: bought %s for %d (points now %d)", kPerks[i].name, kPerks[i].cost, h.points);
-        }
+        if (d && !prevDigit[i] && g_perkMenu)
+            ApplyPerkBuy(h, i);
         prevDigit[i] = d;
+    }
+
+    // P: Pack-a-Punch (5000 points, upgrades the equipped weapon to its _upgraded row).
+    static bool prevP = false;
+    const bool p = (GetAsyncKeyState('P') & 0x8000) != 0;
+    if (p && !prevP && !g_perkMenu)
+        PackaPunch(h);
+    prevP = p;
+
+    // Deferred Pack-a-Punch weapon equip (after the knuckle-crack animation).
+    if (g_packaPendingRow && GetTickCount() >= g_packaEquipAt) {
+        if (!g_mw2EquipRow) g_mw2EquipRow = ResolveEquipRow();
+        if (g_mw2EquipRow) g_mw2EquipRow(g_packaPendingRow);
+        Log("packa-punch: equipped upgraded row %u", g_packaPendingRow);
+        g_packaPendingRow = 0;
+    }
+
+    // Mystery Box: after ~2.5 s of 3D weapons spinning, the chosen gun hovers
+    // above the open box until the player presses F.
+    if (g_boxSpinning && GetTickCount() - g_boxSpinStart >= 2500) {
+        g_boxSpinning = false;
+        g_boxWaiting = true;
+        Log("mystery box: spin done, result=%d (press F)", g_boxResult);
     }
 
     h.round = RoundForKills(h.kills);
@@ -621,7 +877,7 @@ void Zombies_Update() {
             Log("waypoint: room=%04X Leon=(%.0f, %.0f, %.0f)", h.roomId, leon[0], leon[1], leon[2]);
         }
     }
-    if (g_introDone) {
+    if (g_introFreezeOn && g_introDone) {
         const DWORD since = nowMs - g_introStart;
         if (since < 2200) h.introBlack = 1.0f;
         else if (since < 3500) h.introBlack = 1.0f - (float)(since - 2200) / 1300.0f;
@@ -657,23 +913,6 @@ void Zombies_Update() {
     h.roundSize = Zombies_RoundSize(h.round);
     h.roundKills = h.kills - Zombies_RoundStartKills(h.round);
 
-    // Round complete: the round's kill quota is reached and no enemy is left.
-    // BO1 waits zombie_between_round_time (10 s) before the next round starts.
-    static int s_completedRound = 0;
-    const bool quotaReached = h.kills >= Zombies_RoundStartKills(h.round) + h.roundSize;
-    if (h.alive == 0 && quotaReached && s_completedRound != h.round) {
-        s_completedRound = h.round;
-        g_roundCompleteUntil = GetTickCount() + (DWORD)kZombieBetweenRoundTime * 1000;
-        g_intermissionUntil = g_roundCompleteUntil;
-        // The round-change sound (user-provided "Round Change Sound Effect") runs
-        // on its own MCI channel so a kill quip can't cut it off. The delayed
-        // round_start sting is scheduled below.
-        MciPlay("round", "bo1_round_change.mp3");
-        Log("round %d complete (kills=%d size=%d)", h.round, h.kills, h.roundSize);
-    }
-    // A new run resets the completion latch.
-    if (h.kills < g_lastKills) s_completedRound = 0;
-
     static bool loggedInventory = false;
     static int loggedRound = 0;
     if (!loggedInventory && h.ammoValid) {
@@ -701,12 +940,21 @@ void Zombies_Update() {
     }
 
     if (g_lastRound == 0 || h.round != g_lastRound) {
+        const int previousRound = g_lastRound;
         g_bannerUntil = now + 2600;
         g_lastRound = h.round;
-        // BO1 plays mus_zombie_round_start at every round start. Its own MCI
-        // channel, so the round-over sting keeps playing under it. During the
-        // between-round time the start sting waits for the intermission to end,
-        // the way BO1 lets the round-over sting play out first.
+        // RoundForKills() advances the displayed round as soon as its kill
+        // quota is reached, so the old quotaReached test could never fire.
+        // Detect the transition itself and play the user-provided full round
+        // change sound, then leave the ten-second BO1 intermission before the
+        // next round-start sting.
+        if (previousRound > 0 && h.round > previousRound) {
+            g_roundCompleteUntil = now + (DWORD)kZombieBetweenRoundTime * 1000;
+            g_intermissionUntil = g_roundCompleteUntil;
+            MciPlay("round", "bo1_round_change.mp3");
+            Log("round %d complete (kills=%d size=%d)", previousRound, h.kills,
+                Zombies_RoundSize(previousRound));
+        }
         if (TimeActive(g_intermissionUntil)) {
             g_pendingRoundStart = h.round;
             g_pendingRoundStartAt = g_intermissionUntil;
@@ -761,6 +1009,12 @@ void Zombies_Update() {
         h.perkPop[i] = pop;
     }
     h.perkMenu = g_perkMenu;
+    h.packaPunched = g_packaPunched;
+    h.packaWeaponId = g_packaWeaponId;
+    h.boxSpinning = g_boxSpinning;
+    h.boxWaiting = g_boxWaiting;
+    h.boxSpin = g_boxSpinning ? (float)(GetTickCount() - g_boxSpinStart) / 2500.0f : 0.0f;
+    h.boxResult = g_boxResult;
 
     h.hitmarker = TimeActive(g_hitmarkerUntil);
     h.hitmarkerKill = TimeActive(g_killmarkerUntil);

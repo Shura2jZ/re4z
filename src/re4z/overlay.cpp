@@ -3,11 +3,15 @@
 #include "log.h"
 #include "zombies.h"
 #include "hud_assets.h"
+#include "worldmodel.h"
+#include "worldmachines.h"
 
 #include <d3d9.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <vector>
+#include <cmath>
 #include "bo1font.h"
 
 namespace {
@@ -34,6 +38,9 @@ IDirect3DTexture9* g_scorebarTex = nullptr;
 IDirect3DTexture9* g_ammoCounterTex = nullptr;
 int g_ammoCounterId = 0;
 IDirect3DTexture9* g_perkTex[4] = { nullptr, nullptr, nullptr, nullptr };
+IDirect3DTexture9* g_boxWeaponTex[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+// Real BO1 wall-buy chalk drawings (black background made transparent in the DDS alpha).
+IDirect3DTexture9* g_chalkTex[3] = { nullptr, nullptr, nullptr };
 IDirect3DTexture9* g_lowHealthTex = nullptr;
 IDirect3DTexture9* g_compassHealthTex = nullptr;
 bool g_perkActive[4] = { false, false, false, false };
@@ -297,6 +304,7 @@ void DrawTextBatch(IDirect3DDevice9* device, std::vector<TextVertex>& text) {
 } // namespace
 
 void Overlay_OnReset() {
+    WorldModel_Reset();
     if (g_fontTexture) {
         g_fontTexture->Release();
         g_fontTexture = nullptr;
@@ -304,6 +312,77 @@ void Overlay_OnReset() {
     if (g_crosshairTex) {
         g_crosshairTex->Release();
         g_crosshairTex = nullptr;
+    }
+    for (IDirect3DTexture9*& t : g_chalkTex) {
+        if (t) { t->Release(); t = nullptr; }
+    }
+}
+
+// Export used by the MW2RE4 host's Present hook: the host owns device vtable
+// slot 17, so it calls us to draw the BO1 HUD each frame.
+extern "C" __declspec(dllexport) void __cdecl BO1Z_RenderOverlay(IDirect3DDevice9* device) {
+    Overlay_Render(device);
+}
+
+void Overlay_DrawWorldModels(IDirect3DDevice9* device) {
+    const ZombiesHud& z = Zombies_Get();
+    if (!z.valid || !z.inGame) return;
+    const WorldMachine* machines = WorldMachines();
+    for (int i = 0; i < WM_COUNT; ++i) {
+        const WorldMachine& m = machines[i];
+        WorldModel_DrawAtSpawn(device, m.file, m.offX, m.offY, m.offZ, m.yaw, m.scale, m.zUp);
+    }
+    // Mystery Box animation: hinged lid + a real BO1 weapon model that spins
+    // above the open box, then stays until the player presses F to take it.
+    if (z.boxSpinning || z.boxWaiting) {
+        float anch[3]; WorldMachines_Anchor(anch);
+        const WorldMachine& box = machines[0];
+        const float bx = anch[0] + box.offX;
+        const float by = anch[1] + box.offY;
+        const float bz = anch[2] + box.offZ;
+        const float spin = z.boxSpin;
+        // Lid: opens during the first 15% of the spin, stays open while waiting.
+        const float open = z.boxWaiting ? 1.0f : (spin < 0.15f ? spin / 0.15f : 1.0f);
+        // Z-up lid: the painted "??" face is on top when closed; the hinge is
+        // the local Y edge. Swing about X to lift it ~110 degrees.
+        const float pitch = 1.92f * open;
+        WorldModel_DrawHinged(device, L"boxlid.r4m", bx, by + 445.0f, bz,
+                              0.0f, -0.859f, pitch, box.scale, true);
+        // Weapon: cycles quickly during the spin, then holds on the result.
+        static const wchar_t* kGuns[14] = {
+            L"boxgun_1911.r4m", L"boxgun_mp5.r4m", L"boxgun_ak74u.r4m",
+            L"boxgun_m14.r4m", L"boxgun_ithaca.r4m", L"boxgun_python.r4m",
+            L"boxgun_raygun.r4m", L"boxgun_thundergun.r4m", L"boxgun_pm63.r4m",
+            L"boxgun_spas.r4m", L"boxgun_hk21.r4m", L"boxgun_l96.r4m",
+            L"boxgun_dragunov.r4m", L"boxgun_ak47.r4m"
+        };
+        const int idx = z.boxWaiting ? z.boxResult
+                                     : ((int)(spin * 70.0f) % 14);
+        if (idx >= 0 && idx < 14) {
+            const float yaw = (float)(GetTickCount() % 3600) / 3600.0f * 6.283185f;
+            WorldModel_DrawCentered(device, kGuns[idx], bx, by + 1250.0f, bz,
+                                    yaw, 7.0f, true);
+        }
+    }
+    // Wall-buy weapons: real BO1 chalk drawings fixed on the side wall.
+    // Not HUD icons: these are the chalk_weapon_* materials from the BO1 fastfiles.
+    float anch[3]; WorldMachines_Anchor(anch);
+    static const char* kChalk[3] = {
+        "hud/chalk/chalk_weapon_mp40_c.dds",
+        "hud/chalk/chalk_weapon_m14_c.dds",
+        "hud/chalk/chalk_weapon_ithaca_c.dds",
+    };
+    for (int i = 0; i < 3; ++i) {
+        if (!g_chalkTex[i]) {
+            char full[MAX_PATH];
+            if (BuildAssetPath(full, sizeof(full), kChalk[i]))
+                g_chalkTex[i] = LoadDdsTexture(device, full);
+        }
+        if (!g_chalkTex[i]) continue;
+        const float wx = anch[0] - 4200.0f;      // wall at -X
+        const float wy = anch[1] + 1100.0f;      // ~1.1 m high
+        const float wz = anch[2] + (i - 1) * 1400.0f;
+        WorldModel_DrawBillboard(device, g_chalkTex[i], wx, wy, wz, 1.57f, 900.0f, 450.0f);
     }
 }
 
@@ -332,6 +411,16 @@ void Overlay_Render(IDirect3DDevice9* device) {
             if (BuildAssetPath(full, sizeof(full), g_perkNames[i])) {
                 g_perkTex[i] = LoadDdsTexture(device, full);
             }
+        }
+    }
+    // Mystery Box spinning weapon sprites (real BO1 HUD weapon icons).
+    static const char* boxIcons[6] = { "hud_colt", "hud_cz75", "hud_spas12", "hud_m14", "hud_uzi", "hud_rpg" };
+    for (int i = 0; i < 6; ++i) {
+        if (!g_boxWeaponTex[i]) {
+            char full[MAX_PATH], rel[160];
+            snprintf(rel, sizeof(rel), "hud/code_post_gfx_mp/code_post_gfx_mp/images/%s.dds", boxIcons[i]);
+            if (BuildAssetPath(full, sizeof(full), rel))
+                g_boxWeaponTex[i] = LoadDdsTexture(device, full);
         }
     }
     if (!g_lowHealthTex) {
@@ -511,7 +600,7 @@ void Overlay_Render(IDirect3DDevice9* device) {
         const float refScale = W / 704.0f;   // reference px -> screen px
         const float uiScale = H / 396.0f;
         const float perkX = 53.0f * refScale;
-        const float perkY = 332.0f * uiScale;   // BO1: perk row below the round number (measured from reference)
+        const float perkY = 277.0f * uiScale;
         const float perkPitch = 25.5f * refScale;
         const float perkSize = 20.0f * refScale;
 
@@ -554,6 +643,14 @@ void Overlay_Render(IDirect3DDevice9* device) {
             device->SetTexture(0, nullptr);
         }
 
+        // Pack-a-Punch feedback: small label under the round number, not over
+        // the perk badges.
+        if (z.packaPunched) {
+            AddTextCondensed(text, 51.2f * refScale, 365.0f * uiScale, "PACK-A-PUNCHED",
+                             D3DCOLOR_ARGB(255, 236, 232, 230), kBo1FontNormalDef,
+                             8.0f * uiScale, 5.5f * refScale);
+        }
+
         // Round counter.
         //
         // BO1 keeps the round number in the lower-left corner, UNDER the perk
@@ -575,11 +672,13 @@ void Overlay_Render(IDirect3DDevice9* device) {
             // Halo passes: BO1's glow material is a soft bloom around the
             // glyph, not a filled shape. The inflation stays small and the
             // alpha low, otherwise the additive blend saturates into a bar.
-            AddTextCondensed(glowText, 51.2f * refScale, 289.0f * uiScale, buf,
+            // Round number BELOW the perk badges (pushed down so the chalk
+            // never overlaps the badges).
+            AddTextCondensed(glowText, 51.2f * refScale, 368.0f * uiScale, buf,
                              chalk, kBo1FontNormalDef, rs, ra, 1.5f * uiScale, 0.16f);
-            AddTextCondensed(glowText, 51.2f * refScale, 289.0f * uiScale, buf,
+            AddTextCondensed(glowText, 51.2f * refScale, 368.0f * uiScale, buf,
                              chalk, kBo1FontNormalDef, rs, ra, 3.0f * uiScale, 0.07f);
-            AddTextCondensed(text, 51.2f * refScale, 289.0f * uiScale, buf, chalk,
+            AddTextCondensed(text, 51.2f * refScale, 368.0f * uiScale, buf, chalk,
                              kBo1FontNormalDef, rs, ra);
         }
 
@@ -589,18 +688,18 @@ void Overlay_Render(IDirect3DDevice9* device) {
             // 512x64 alpha art tinted dark blood red, tapering right where the
             // number sits. Placed behind the score ink (measured 8:1 aspect).
             if (g_scorebarTex) {
-                // BO1 score splat: 512x64 alpha art (8:1) tinted dark blood
-                // red, drawn behind the score number (measured from reference:
-                // score right edge ~547, baseline ~332 in 704x396 ref space).
-                DrawSprite(device, g_scorebarTex, 327.0f * refScale, 318.0f * uiScale,
-                           224.0f * refScale, 28.0f * uiScale,
+                // BO1 score splat: 512x64 alpha art tinted dark blood red.
+                // BO1 ref 2560x1440: x 2097..2252 (155px), y 1002..1040 (38px)
+                // -> ~43x10.4 ref units. Draw it at that size, not stretched.
+                DrawSprite(device, g_scorebarTex, 560.0f * refScale, 268.0f * uiScale,
+                           104.0f * refScale, 22.0f * uiScale,
                            D3DCOLOR_ARGB(235, 105, 20, 14));
             }
             snprintf(buf, sizeof(buf), "%d", z.points);
-            // Reference: ink right edge ~547, baseline ~332.
+            // Score ink INSIDE the splat, slimmer font (BO1 retail normal font).
             const D3DCOLOR ptsWhite = D3DCOLOR_ARGB(255, 236, 232, 230);
-            AddTextCondensedRight(text, 547.0f * refScale, 332.0f * uiScale, buf, ptsWhite,
-                                  kBo1FontBoldDef, 10.0f * uiScale, 7.0f * refScale);
+            AddTextCondensedRight(text, 635.0f * refScale, 278.0f * uiScale, buf, ptsWhite,
+                                  kBo1FontNormalDef, 9.0f * uiScale, 6.0f * refScale);
             if (z.pointsPopup > 0) {
                 // BO1 score popup: right-aligned, yellow (0.9, 0.9, 0), moves
                 // up and to the left while it fades out over 0.5 s.
@@ -615,9 +714,9 @@ void Overlay_Render(IDirect3DDevice9* device) {
                 const D3DCOLOR col = (alpha >= 255)
                     ? popYellow
                     : (D3DCOLOR)(((DWORD)alpha << 24) | (popYellow & 0x00FFFFFF));
-                AddTextCondensedRight(text, (537.0f + z.popupDx) * refScale,
-                                     (332.0f + z.popupDy) * uiScale, buf, col,
-                                     kBo1FontBoldDef, 14.0f * uiScale, 9.3f * refScale);
+                AddTextCondensedRight(text, (635.0f + z.popupDx) * refScale,
+                                     (278.0f + z.popupDy) * uiScale, buf, col,
+                                     kBo1FontBoldDef, 11.0f * uiScale, 7.0f * refScale);
             }
         }
 

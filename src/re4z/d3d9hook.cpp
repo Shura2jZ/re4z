@@ -14,11 +14,15 @@ typedef HRESULT (WINAPI* CreateDeviceFn)(IDirect3D9*, UINT, D3DDEVTYPE, HWND,
 typedef HRESULT (WINAPI* ResetFn)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 typedef HRESULT (WINAPI* PresentFn)(IDirect3DDevice9*, const RECT*, const RECT*,
                                     HWND, const RGNDATA*);
+typedef HRESULT (WINAPI* StretchRectFn)(IDirect3DDevice9*, IDirect3DSurface9*, const RECT*,
+                                        IDirect3DSurface9*, const RECT*, D3DTEXTUREFILTERTYPE);
 
 Direct3DCreate9Fn g_origDirect3DCreate9 = nullptr;
 CreateDeviceFn g_origCreateDevice = nullptr;
 ResetFn g_origReset = nullptr;
 PresentFn g_origPresent = nullptr;
+StretchRectFn g_origStretchRect = nullptr;
+bool g_worldDrawnThisFrame = false;
 
 bool g_d3d9ObjectHooked = false;
 bool g_deviceHooked = false;
@@ -57,12 +61,34 @@ void** FindIAT(HMODULE module, const char* wantedDll, const char* wantedFunction
 
 HRESULT WINAPI HookPresent(IDirect3DDevice9* device, const RECT* src, const RECT* dst,
                            HWND destWindow, const RGNDATA* dirtyRegion) {
+    // Reset the per-frame world-model flag (one StretchRect draw per frame).
+    extern bool g_worldDrawnThisFrame;
+    g_worldDrawnThisFrame = false;
     if (device && device == g_device) {
         static bool logged = false;
         if (!logged) { Log("HookPresent called, device=%p g_device=%p", device, g_device); logged = true; }
         Overlay_Render(device);
     }
     return g_origPresent(device, src, dst, destWindow, dirtyRegion);
+}
+
+// The game's 3D pass ends with a StretchRect OUT of the back buffer: at that
+// moment the scene's depth is still bound, so world models drawn here are
+// correctly hidden by the ground and walls (drawing at Present is too late).
+HRESULT WINAPI HookStretchRect(IDirect3DDevice9* device, IDirect3DSurface9* src,
+                               const RECT* srcRect, IDirect3DSurface9* dst,
+                               const RECT* dstRect, D3DTEXTUREFILTERTYPE filter) {
+    if (device == g_device && !g_worldDrawnThisFrame && src) {
+        IDirect3DSurface9* bb = nullptr;
+        if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+            if (bb == src) {  // this is the end of the 3D pass
+                g_worldDrawnThisFrame = true;
+                Overlay_DrawWorldModels(device);
+            }
+            bb->Release();
+        }
+    }
+    return g_origStretchRect(device, src, srcRect, dst, dstRect, filter);
 }
 
 HRESULT WINAPI HookReset(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params) {
@@ -81,18 +107,20 @@ void HookDevice(IDirect3DDevice9* device) {
 
     void** vtable = *(void***)device;
     DWORD oldProtect = 0;
-    if (!VirtualProtect(vtable, 18 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(vtable, 35 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         Log("D3D9 device vtable: VirtualProtect failed %lu", GetLastError());
         return;
     }
 
     g_origReset = (ResetFn)vtable[16];
     g_origPresent = (PresentFn)vtable[17];
+    g_origStretchRect = (StretchRectFn)vtable[34];
     vtable[16] = (void*)&HookReset;
     vtable[17] = (void*)&HookPresent;
+    vtable[34] = (void*)&HookStretchRect;
 
-    VirtualProtect(vtable, 18 * sizeof(void*), oldProtect, &oldProtect);
-    FlushInstructionCache(GetCurrentProcess(), vtable, 18 * sizeof(void*));
+    VirtualProtect(vtable, 35 * sizeof(void*), oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), vtable, 35 * sizeof(void*));
     g_deviceHooked = true;
     Log("D3D9 device vtable hooked (Reset=%08X Present=%08X)",
         (unsigned)g_origReset, (unsigned)g_origPresent);

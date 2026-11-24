@@ -737,6 +737,34 @@ kill, en test), (3) perks buvables + icone du perk qui pop apres avoir bu, (4) v
 - Calibration HUD exacte (splat, ammo, dpad) : les coords actuelles sont estimees ; une capture
   BO1 (deja fournie) permettra d'ajuster les positions au pixel.
 
+## 18/11 - Reprise technique (non compilee / non testee en jeu)
+
+- `src/re4z/zombies.cpp` : correction de la mise a l'echelle des PV. L'ancien scan rehaussait
+  les PV au niveau cible a chaque frame des que l'ennemi tombait sous ce seuil, ce qui pouvait
+  le rendre pratiquement immortel. Le nouvel ajustement s'applique une seule fois aux ennemis
+  nouvellement observes (adresses suivies et remises a zero au changement de salle).
+- `ScanEnemies()` verifie maintenant que `GetGame()` reste valide avant de lire le room id.
+- Le gel `FreezeCap` et `IntroFreeze` est desormais desactive par defaut, car il modifie le bit
+  mouvement des ennemis et peut contribuer a l'invisibilite. Les options restent activables dans
+  `BO1Z.ini` pour diagnostic.
+- Transition de manche : l'ancien test attendait que le compteur de kills remplisse le quota de
+  la manche affichee, alors que `RoundForKills()` passe deja a la manche suivante au seuil. La
+  fin de manche est maintenant detectee au changement de numero, le fichier fourni
+  `bo1_round_change.mp3` est joue et le sting de debut est retarde de 10 s.
+- Le record `atoutanimexemple.mp4` confirme une animation 3D de bras/bouteille face a la machine.
+  Pas de faux sprite ajoute : l'animation authentique demande un viewmodel/rig/clip jouable dans
+  le runtime; le simple overlay D3D9 ne peut pas reproduire correctement ces mouvements.
+- L'utilisateur demande maintenant egalement l'import complet des machines Perk-a-Cola et
+  Pack-a-Punch BO1 dans RE4 avec interaction. Les assets d'armes T5 deja exportes ne prouvent
+  pas la disponibilite des modeles de machines. Il faut d'abord identifier/exporter les XModel,
+  materiaux/textures et animations depuis BO1, puis verifier le chemin d'integration pour les
+  afficher dans le monde RE4 et implementer une interaction/achat. Pack-a-Punch complet non fait.
+- Sauvegarde complete lancee sur `F:\re4z_backup_20261117` apres saturation de E:. Le dossier
+  contient au moins HANDOVER.md, la source avant modification et l'enregistrement; comparaison
+  HANDOVER identique, source zombies differente comme attendu. Verification checksum complete
+  non realisee.
+- Correctif runtime `guest.ready=0` (23/11) : les logs demontrent que le hook de redirection BO1Z transforme la carte IW4 demandee en `zombie_cosmodrome`; son GSC T5 appelle `exitLevel` avant publication de `guest.ready`. `MW2RE4_new.cpp` marque maintenant le `CreateProcessW` du runtime par `IW4L_RE4_NATIVE_MAP`; `mapredirect.cpp` laisse la carte IW4 native intacte pendant cette creation. Compilation MinGW i386 reussie pour l'hote et BO1Z; les deux PE32 et exports requis ont ete controles. Deploiement verifie par SHA-256 identiques aux candidats. Aucun lancement du jeu/runtime effectue ici : le test en jeu reste a faire par l'utilisateur.
+
 ## 17/11 - HUD exact (calibration sur capture BO1)
 
 **Analyse de la capture BO1 (exemple bo1.png, 1800x917) par masques de couleur** :
@@ -760,3 +788,133 @@ automatiquement - resolution/aliasing). A ajuster au retour visuel.
 2. Invisibilite zombies : BO1Z.ini avec FreezeCap=0 et IntroFreeze=0, runtime ACTIF.
 3. Degats intermittents : extrait MW2RE4.log avec un "shot N ... BulletHit returned 1" sans
    ligne "damage:" qui suit.
+
+## 23/11 - Sequencement animation perk / Pack-a-Punch et diagnostic des banques
+
+- `zombies.cpp` : le retour a l'arme BO1 tenue apres une bouteille est differe de 3 s, au-dela
+  du `firstRaiseTime=2.8` lu dans les definitions extraites. Le retour est annule si la ligne
+  d'arme tenue a change. Pack-a-Punch attend aussi 3 s avant de demander l'arme amelioree
+  (l'ancien delai de 1.5 s coupait le premier raise) et ne fait le switch que si l'arme source
+  est toujours tenue.
+- Build BO1Z : `build_hudonly.bat` compile avec MinGW i386; seuls avertissements existants et
+  casts d'exports/enum, aucune erreur. `BO1Z_new.asi` verifie PE32 puis deploye en
+  `game/Bin32/BO1Z.asi`; SHA-256 identiques (`bc5a0969...b5456fa`). Le jeu et le runtime
+  n'ont pas ete lances; le comportement reste a tester par l'utilisateur.
+- Diagnostic affine : sur cette installation, `common_mp.ff` et `common_zombie.ff` ont le meme
+  SHA-256 (`f812069e...543117e`). Le journal historique `1795458148.log` correspond a une
+  session sur `zombie_cosmodrome` (2 289 alias, 0 zone gaps, 1 342 alias localises francais) et
+  non a la session recente sur la carte IW4 native. Il signalait alors 76 alias de prefetch sans
+  son charge (`swallow`, `knuckle_*`, `weap_raise_plr`, etc.).
+- Pour la session recente, `latest.log` indique `mp_subbase` (181 alias), `common_mp` T5 (2 287
+  alias repertories, 1 513 charges), 1 882 XAnim T5 de `common_mp` et seulement 8 clips dans le
+  catalogue XAnim de la carte. Les animations de bouteille et de Pack-a-Punch existent dans les
+  exports `common_zombie` sous `assets/t5xanim`, mais pas dans le catalogue de cette carte.
+  N'affirmer ni que les alias de l'ancienne carte Zombie sont ceux de la session courante, ni que
+  les sons de tir BO1 ont ete refuses sans une trace specifique de tir/alias.
+- Audio demande (source modifiee, test en jeu a faire) : `MW2RE4_new.cpp` appelle le son BO1
+  depuis `ResolveShots`, apres validation de l'evenement de tir runtime et avant le `BulletHit`
+  RE4. Sept echantillons sont mappes par nom d'arme, avec trois voix MCI par categorie; les
+  erreurs d'ouverture/lecture sont journalisees. Le chemin MCI ouvre maintenant correctement
+  un WAV dont le chemin peut contenir des espaces. Pas de deduplication artificielle par tick,
+  afin de ne pas perdre deux vraies detections de tir consecutives. `zombies.cpp` joue
+  `bo1_perk_drink.wav` sur un canal independant lors d'un achat valide.
+- Verification/deploiement : compilation syntaxique MinGW i386 reussie, puis build complet de
+  `MW2RE4_new.asi` reussi avec `-lwinmm` (necessaire pour MCI). Le candidat est PE i386 et
+  exporte `MW2RE4_GetHits`, `MW2RE4_SetPerks`, `MW2RE4_PlayPerkAnim` et
+  `MW2RE4_GetLastEquippedBo1Row`. Deploye dans `game/Bin32/MW2RE4.asi`; SHA-256 identique au
+  candidat : `6888f5beb88fd6548b517bcced7afff90fd9d622a136d68e7a3316a4903ef0c9`.
+  Aucun lancement du runtime/jeu : le correctif est compile et deploye mais son comportement
+  audio n'est pas encore valide en jeu. Demander un essai utilisateur sur quelques armes et un
+  achat de perk, puis examiner `MW2RE4.log` pour `BO1 audio: opened/cannot open/cannot play`.
+  `git diff --check` est propre (avertissements CRLF seulement).
+- Essai Cosmodrome demande pour comparer les sons : suppression du fallback force vers
+  `mp_subbase` dans `StartRuntime()` et configuration installee `Skin=5` (`BO1 Zombies
+  (Cosmodrome)`). Build MinGW i386 reussi (avertissement existant sur la declaration
+  `extern MW2RE4_LifeDownOrigPtr`), ASI PE32 redeploye; SHA-256 source/deploye identique
+  `5576ed73ed257369965d202d8eb3f52bb1aa3f2ded26a80fbd832da29c9f631b`. Ni jeu ni runtime
+  lances. Ancien log prouve que le runtime charge `mp_subbase` avec `Skin=6`; Cosmodrome
+  a deja provoque `common_scripts/_dynamic_world:120:3 ... foreach requires an array` puis
+  `exitLevel`, donc son chargement jusqu'au gameplay/audio reste a confirmer par l'utilisateur.
+  Diagnostic audio separe : `Bo1ShotSound()` filtre les armes T5 `1195-1268`; les armes
+  MW2 classiques ne sont pas couvertes par ce mapping. Le code des sons n'a pas ete modifie
+  pendant cet essai de carte.
+- Retour utilisateur / journaux Cosmodrome : `latest.log` confirme map T5 demandee puis chargee
+  (50.2 s), avant erreur `common_scripts/_dynamic_world:120:3 in player_init: foreach requires
+  an array`, `exitLevel`, session intermission et fin du runtime (process_exit code 0). Le host
+  reste alors `guest ready=0` et attend jusqu'au timeout : le chargement infini est bien la
+  consequence de la fin de session GSC, non un chargement encore en cours.
+- Apres le retour utilisateur, tentative orientee besoin : garder la map chargee
+  `zombie_cosmodrome` (Skin=5) et, apres `wait world`, executer `set mapname mp_subbase`
+  juste avant `spawn 0`, pour que `common_scripts/utility::isSP()` (qui renvoie vrai quand le
+  nom de map ne commence pas par `mp_`) fasse prendre au `_dynamic_world::player_init()` le
+  chemin MP sans iteration sur `level.players`. Cela conserve la zone T5 selectionnee mais est
+  experimental : pas teste, le moteur peut ne pas laisser changer ce dvar ou d'autres natifs
+  GSC T5 peuvent manquer. Build MinGW i386 OK (avertissement `extern MW2RE4_LifeDownOrigPtr`),
+  PE32 redeploye; SHA-256 source/deploye `e8362f8ddf3e339f3f20ca7bcdd6d108057b24d04c9d39f9f9ba1d7c55aeb176`.
+  Re4/runtime pas lances. Redemarrer RE4 et examiner latest.log apres cet essai, surtout une
+  eventuelle nouvelle `gsc: runtime_error`; ne pas conclure que Cosmodrome est corrige avant.
+
+## 24/11/2026 — Checkpoint : separation des taches + assets BO1
+
+### Repartition du travail
+- **Autre IA** : runtime MW2, interface/HUD BO1 fidele, fluidite.
+- **Ici** : tout ce qui concerne les assets BO1 et le monde 3D (hors runtime).
+
+### Runtime (cote autre IA, puis replacement de map)
+- L'autre IA a fait remarcher le runtime en chargeant la map T5 selectionnee puis
+  en spoofant `set mapname mp_subbase` apres `wait world`, avant `spawn 0` et
+  `force_match_start`. Le GSC IW4 (`common_scripts/_dynamic_world`) prend ainsi
+  son chemin multiplayer au lieu d'iterer `level.players` (absent). La zone T5
+  rechargee reste celle du skin, d'ou le retour des sons zombies BO1.
+- **Decision utilisateur** : remplacer `zombie_cosmodrome` par
+  `zombie_cod5_prototype` (Nacht der Untoten). Cosmodrome deja observe en timeout.
+  `zombie_cod5_prototype.ff` = 32,8 Mo contre 50,6 Mo ; les deux chargent
+  `common_zombie.ff` (48,9 Mo) qui contient armes/sons ZM.
+- Modifie ici dans `MW2RE4_new.cpp` : `kSkins[5]` = `"BO1 Zombies (Nacht der
+  Untoten)"` / `zombie_cod5_prototype` ; `Skin=5` dans `MW2RE4.ini` pointe dessus.
+  Commentaires du spoof mis a jour. `mapredirect.cpp` : fallback IW4 -> T5
+  redirige maintenant vers `zombie_cod5_prototype` et plus vers cosmodrome.
+- **Build host** : `-lwinmm` est desormais OBLIGATOIRE (l'autre IA a ajoute
+  `mciGetErrorStringA`) :
+  `g++ -m32 -std=c++17 -O2 -shared -static -static-libgcc -static-libstdc++ -o MW2RE4_new.asi MW2RE4_new.cpp -lgdi32 -luser32 -lwinmm`.
+  Verifie : aucune chaine `zombie_cosmodrome` dans les deux ASI deployes.
+
+### Assets BO1 importes ici (deploys dans `game\Bin32\re4z\`)
+- **Vraie machine Pack-a-Punch** : `zombie_vending_packapunch` (COSMODROME.ff)
+  -> `packapunch.r4m`. Remplace le placeholder Juggernog dans `worldmachines.cpp`.
+- **Couvercle de la boite** : `zombie_treasure_box_lid` -> `boxlid.r4m`.
+- **14 armes viewmodel BO1** -> `boxgun_*.r4m` : 1911, MP5, AK74u, M14, Ithaca,
+  Python, **Ray Gun**, Thundergun, PM63, SPAS, HK21, L96, Dragunov, AK47.
+  Lignes d'equipement prises dans `bo1_catalog.h` ; Thundergun/AK47 n'ont pas de
+  ligne ZM exacte -> substitutions 1242 / 1196.
+- **Vrais dessins a la craie** : 12 `chalk_weapon_*` extraits des .ff BO1,
+  convertis en `assets\hud\chalk\*.dds` (fond noir rendu transparent via alpha).
+  Les murales utilisent mp40/m14/ithaca au lieu des icons HUD. Script :
+  `tools\chalk_png_to_dds.py`.
+- **Vraie jingle de la boite** : melodie Zombies reelle (7,4 s) ->
+  `bo1_mysterybox_jingle.wav` ; arret a la recuperation de l'arme. La source
+  `music_box_00.opus` n'est pas indexee par GrayWolf ni presente dans les IWD.
+
+### Logique boite / monde
+- Cycle BO1 : couvercle s'ouvre, armes 3D defilent 2,5 s, arme choisie reste
+  flotter, **F pour la prendre** (`g_boxWaiting`). Ancien sprite 2D retire du HUD.
+- **Correction d'orientation** : tous les modeles exportes sont Z-up.
+  `mysterybox.r4m` etait declare `zUp=false` -> boite couchee sur le cote.
+  Passe en `zUp=true` : ouverture vers le haut, `??` du couvercle face haut.
+  Couvercle et armes convertis Z-up dans `WorldModel_DrawHinged/DrawCentered`.
+- `worldmodel.cpp` : nouveaux `WorldModel_DrawMatrix`, `DrawCentered`, `DrawHinged`.
+
+### En attente / non resolu
+- **Derive des modeles** (toujours rapporte par l'utilisateur) : les modeles
+  glissent legerement quand la cam bouge. Pas de correction appliquee sans
+  mesure. Ajoute dans `worldmodel.cpp` :
+  - touche **F9** = bascule la correction d'aspect GX (defaut Hor+ boshjerns vs
+    projection GX brute) ;
+  - log one-shot dans `RE4Z.log` : `cam GX:` (view/proj derives) et `cam D3D:`
+    (GetTransform reels). A comparer apres un lancement.
+- Tests utilisateur a faire : runtime sur Nacht der Untoten (sons d'armes ZM),
+  orientation boite + 14 armes, F9 et les deux lignes `cam ...`.
+
+### Binaires deployes
+- `BO1Z.asi` 806 279 o, `MW2RE4.asi` deploye le 24/11 (build avec `-lwinmm`).
+- Ni jeu ni runtime lances ici : tous les comportements restent a valider en jeu.

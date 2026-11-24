@@ -6,6 +6,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <mmsystem.h>
 #include <tlhelp32.h>
 #include <d3d9.h>
 #include <d3dcompiler.h>
@@ -47,6 +48,19 @@
 // 4 = Speed Cola); defined at file scope near the exports, declared here so
 // the balance code inside the anonymous namespace can read it.
 extern volatile LONG g_bo1Perks;
+
+// Last BO1 catalog row equipped through the F10 weapons menu (so Pack-a-Punch
+// can upgrade the *actually equipped* weapon, not a guessed RE4 item id).
+extern volatile uint32_t g_lastEquippedBo1Row;
+
+// BO1Z export: buy a perk slot (0 Jugg, 1 Quick Revive, 2 Speed Cola, 3 Double Tap).
+using BuyPerkFn = bool(__cdecl*)(int);
+static BuyPerkFn g_zombiesBuyPerk = nullptr;
+static BuyPerkFn ResolveBuyPerk() {
+    if (HMODULE bo1z = GetModuleHandleA("BO1Z.asi"))
+        return (BuyPerkFn)GetProcAddress(bo1z, "Zombies_BuyPerk");
+    return nullptr;
+}
 // Stack at entry: [esp]=ret [esp+4]=em [esp+8]=damage
 extern "C" int MW2RE4_ScaleDamage(void* em, int damage);
 extern "C" void* MW2RE4_LifeDownOrigPtr = nullptr;
@@ -341,7 +355,7 @@ const Skin kSkins[] = {
     { "Task Force 141 (snow)", "mp_derail", false },
     { "US Army Rangers", "mp_invasion", false },
     { "Navy SEALs", "mp_subbase", false },
-    { "BO1 Zombies (Cosmodrome)", "zombie_cosmodrome", false },
+    { "BO1 Zombies (Nacht der Untoten)", "zombie_cod5_prototype", false },
     { "Leon (jacket)", "mp_subbase", true },
 };
 constexpr int kSkinCount = sizeof(kSkins) / sizeof(kSkins[0]);
@@ -714,7 +728,11 @@ std::wstring Wide(const std::string& s)
 
 bool CreateBridge()
 {
-    std::wstring name = L"Local\\" + Wide(g_cfg.mappingName);
+    // The IW4L runtime opens the objects using the raw IW4L_GTA_BRIDGE value as
+    // the name (e.g. "MW2RE4_v1_control"), with NO "Local\" prefix. Using the
+    // prefix here creates different kernel objects -> the runtime never finds
+    // the bridge ("GTA bridge mapping is not open") and never publishes a frame.
+    std::wstring name = Wide(g_cfg.mappingName);
     g_mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, MappingSize, name.c_str());
     if (!g_mapping)
         return false;
@@ -839,10 +857,28 @@ bool StartRuntime()
     SetEnvironmentVariableW(L"IW4L_RE4_LEON_STYLE", kSkins[g_cfg.skin].leon ? L"1" : nullptr);
     // the player's own paintings of the arms images (<image>.png), used instead of the automatic Leon paint
     SetEnvironmentVariableW(L"IW4L_RE4_LEON_PAINT", (root + L"\\leon-paint").c_str());
-    std::wstring command = L"\"" + exe + L"\" --cmds \"wait progression; unlock all; map " + Wide(kSkins[g_cfg.skin].map) +
-                           L"; wait world; spawn 0; force_match_start; set cg_draw2D 0\" menu";
+    const char* mapName = kSkins[g_cfg.skin].map;
+    std::wstring mapCommand = Wide(mapName);
+    // Keep the T5 Nacht der Untoten zone mounted for its weapons/assets. IW4's
+    // common_scripts/_dynamic_world classifies any non-mp_ map as single-player
+    // and then iterates level.players, which is absent in this IW4L session.
+    // After the world is loaded, spoof only mapname before spawn so isSP() takes
+    // its multiplayer path; the loaded world/zone remains zombie_cod5_prototype.
+    // This compatibility workaround is experimental: other T5 GSC APIs may
+    // still be missing from the IW4 runtime.
+    std::wstring command = L"\"" + exe + L"\" --cmds \"wait progression; unlock all; map " + mapCommand +
+                           L"; wait world; set mapname mp_subbase; spawn 0; force_match_start\" menu";
     g_runtimeSkin = g_cfg.skin;
-    Log("MW2 skin: %s (map %s)", kSkins[g_cfg.skin].name, kSkins[g_cfg.skin].map);
+    Log("MW2 skin: %s (selected map %s, runtime map %s)", kSkins[g_cfg.skin].name,
+        kSkins[g_cfg.skin].map, mapName);
+    // Plain CreateProcess, as before the stdin experiment. The inherited-handle
+    // pipe made the runtime hang at "wait progression" (it inherited handles
+    // from RE4). The BO1 HUD is now drawn through BO1Z_RenderOverlay from our
+    // own Present hook, so the runtime's cg_draw2D dvar is irrelevant.
+    // BO1Z's process hook normally redirects IW4 maps to zombie_cosmodrome,
+    // whose T5 GSC exits the unsupported IW4 session before the bridge is ready.
+    // Mark this launch so BO1Z leaves the native IW4 map untouched.
+    SetEnvironmentVariableW(L"IW4L_RE4_NATIVE_MAP", L"1");
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -851,6 +887,7 @@ bool StartRuntime()
                                root.c_str(), &startup, &g_child) != 0;
     SetEnvironmentVariableW(L"IW4L_GTA_BRIDGE", nullptr);
     SetEnvironmentVariableW(L"IW4L_RE4_BRIDGE", nullptr);
+    SetEnvironmentVariableW(L"IW4L_RE4_NATIVE_MAP", nullptr);
     if (okay)
     {
         g_runtimeStarted = GetTickCount();
@@ -1490,6 +1527,79 @@ void LogShotTargets(uint32_t sequence)
     }
 }
 
+const char* Bo1ShotSound(uint32_t weapon, const char* name, const char** alias)
+{
+    if (weapon < 1195 || weapon > 1268 || !name || !name[0])
+        return nullptr;
+    if (StartsWithAny(name, { "m1911" })) { *alias = "bo1_colt"; return "bo1_colt.wav"; }
+    if (StartsWithAny(name, { "cz75" })) { *alias = "bo1_cz75"; return "bo1_cz75.wav"; }
+    if (StartsWithAny(name, { "m14" })) { *alias = "bo1_m14"; return "bo1_m14.wav"; }
+    if (StartsWithAny(name, { "spas", "hs10", "ithaca", "rottweil72" })) {
+        *alias = "bo1_spas"; return "bo1_spas.wav";
+    }
+    if (StartsWithAny(name, { "m72 law", "china lake" })) { *alias = "bo1_rpg"; return "bo1_rpg.wav"; }
+    if (StartsWithAny(name, { "ak74u", "mp5k", "mpl", "pm63", "spectre", "uzi" })) {
+        *alias = "bo1_uzi"; return "bo1_uzi.wav";
+    }
+    if (StartsWithAny(name, { "ak47", "aug", "commando", "famas", "fnfal", "galil", "hk21", "m16", "rpk" })) {
+        *alias = "bo1_ak47"; return "bo1_ak47.wav";
+    }
+    return nullptr;
+}
+
+void PlayBo1ShotSound(uint32_t weapon, const char* name, uint32_t hostTick)
+{
+    const char* alias = nullptr;
+    const char* filename = Bo1ShotSound(weapon, name, &alias);
+    if (!filename)
+        return; // preserve the runtime's native sound for weapons without an extracted BO1 sample
+
+    // Multiple pellet events from one shotgun trigger can share a host tick.
+    // Suppress duplicates before they consume a voice; distinct ticks still play.
+    static uint32_t lastTick = 0;
+    static uint32_t lastWeapon = 0;
+    static bool haveLastShot = false;
+    if (haveLastShot && lastTick == hostTick && lastWeapon == weapon)
+        return;
+    lastTick = hostTick;
+    lastWeapon = weapon;
+    haveLastShot = true;
+
+    static bool opened[7][3] = {};
+    static uint32_t nextVoice[7] = {};
+    static const char* aliases[7] = { "bo1_colt", "bo1_cz75", "bo1_m14", "bo1_spas", "bo1_rpg", "bo1_uzi", "bo1_ak47" };
+    static const char* files[7] = { "bo1_colt.wav", "bo1_cz75.wav", "bo1_m14.wav", "bo1_spas.wav", "bo1_rpg.wav", "bo1_uzi.wav", "bo1_ak47.wav" };
+    size_t channel = 0;
+    while (channel < 7 && strcmp(alias, aliases[channel]) != 0) ++channel;
+    if (channel == 7) return;
+
+    const size_t voice = nextVoice[channel]++ % 3;
+    char voiceAlias[32] = {};
+    snprintf(voiceAlias, sizeof(voiceAlias), "%s_%u", aliases[channel], (unsigned)voice);
+    char path[MAX_PATH] = {};
+    snprintf(path, sizeof(path), "%sre4z\\assets\\sounds\\%s", g_dir, files[channel]);
+    if (!opened[channel][voice]) {
+        const std::string open = "open \"" + std::string(path) + "\" alias " + voiceAlias;
+        MCIERROR error = mciSendStringA(open.c_str(), nullptr, 0, nullptr);
+        if (error) {
+            char message[128] = {};
+            mciGetErrorStringA(error, message, sizeof(message));
+            Log("BO1 audio: cannot open %s (%s)", path, message);
+            return;
+        }
+        opened[channel][voice] = true;
+        Log("BO1 audio: opened %s voice %u for T5 weapon %s", files[channel], (unsigned)voice, name);
+    }
+    mciSendStringA(("stop " + std::string(voiceAlias)).c_str(), nullptr, 0, nullptr);
+    mciSendStringA(("seek " + std::string(voiceAlias) + " to start").c_str(), nullptr, 0, nullptr);
+    MCIERROR error = mciSendStringA(("play " + std::string(voiceAlias)).c_str(), nullptr, 0, nullptr);
+    if (error) {
+        char message[128] = {};
+        mciGetErrorStringA(error, message, sizeof(message));
+        Log("BO1 audio: cannot play %s voice %u (%s)", files[channel], (unsigned)voice, message);
+    }
+}
+
 void ResolveShots(uint8_t* pl)
 {
     uint32_t shots = g_pendingShots, blasts = g_pendingBlasts;
@@ -1509,6 +1619,7 @@ void ResolveShots(uint8_t* pl)
         float range = std::clamp(sh.range, 1.f, 100.f);
         float endH[3] = { sh.origin[0] + d[0] / len * range, sh.origin[1] + d[1] / len * range, sh.origin[2] + d[2] / len * range };
         const char* name = WeaponName(sh.weapon);
+        PlayBo1ShotSound(sh.weapon, name, sh.hostTick);
         GunFit fit = Re4WeaponFor(name, sh.range);
         if (sh.range >= 3.f)
             if (int no = ArsenalWeaponNo(sh.weapon))
@@ -2274,10 +2385,35 @@ const Bo1Gun* Bo1GunByRow(uint32_t row)
 void EquipCatalogWeapon(uint32_t row)
 {
     const Bo1Gun* gun = Bo1GunByRow(row);
+    // BO1 perk bottles and knuckle crack: send them to the runtime via kind 4
+    // (bridge_equip) so it plays the real 3D drink / knuckle-crack animation.
+    // Kind 4 has no catalog gate, so the runtime no longer refuses them.
+    // Also notify BO1Z so the perk is actually granted (bottle) or the weapon
+    // upgraded (knuckle crack).
+    if (!gun->primary && (row == 1269 || (row >= 1270 && row <= 1273))) {
+        if (!g_zombiesBuyPerk) g_zombiesBuyPerk = ResolveBuyPerk();
+        int slot = -1;
+        switch (row) {
+            case 1269: slot = -2; break; // knuckle crack -> pack-a-punch
+            case 1270: slot = 3; break; // doubletap
+            case 1271: slot = 0; break; // juggernog
+            case 1272: slot = 1; break; // quick revive
+            case 1273: slot = 2; break; // sleight
+        }
+        // Play the 3D animation in the runtime (kind 4, size 0). For the knuckle
+        // crack (slot -2) DO NOT call back into BO1Z: PackaPunch() already sent
+        // the animation request, and calling Zombies_BuyPerk(4) here recurses
+        // (PackaPunch -> EquipRow(1269) -> this -> PackaPunch -> ...) = 5 s freeze.
+        Request(4, row, false, gun->clip, gun->stock, gun->size);
+        if (slot >= 0 && g_zombiesBuyPerk)
+            g_zombiesBuyPerk(slot);
+        return;
+    }
     if (gun && gun->primary && gun->row >= 1195)
     {
         Log("guns: BO1 weapon `%s` (row %u) with kind 4 (clip %d stock %d size %d)", gun->name, gun->row,
             gun->clip, gun->stock, gun->size);
+        g_lastEquippedBo1Row = row;
         Request(4, row, false, gun->clip, gun->stock, gun->size);
         return;
     }
@@ -4707,6 +4843,21 @@ DWORD IndicatorColor()
 
 void DrawOverlay(IDirect3DDevice9* device)
 {
+    // Draw the BO1 Zombies HUD first, even before MW2's shared memory exists
+    // (so F9 works before the runtime loads). BO1Z does its own BeginScene/EndScene.
+    // The host owns the device's Present vtable slot, so BO1Z cannot hook it
+    // reliably; calling its exported renderer here guarantees the BO1 HUD is drawn.
+    {
+        typedef void(__cdecl* RenderOverlayFn)(IDirect3DDevice9*);
+        static RenderOverlayFn bo1zRender = nullptr;
+        static bool bo1zResolved = false;
+        if (!bo1zResolved) {
+            bo1zResolved = true;
+            if (HMODULE bo1z = GetModuleHandleA("BO1Z.asi"))
+                bo1zRender = (RenderOverlayFn)GetProcAddress(bo1z, "BO1Z_RenderOverlay");
+        }
+        if (bo1zRender) bo1zRender(device);
+    }
     if (!g_shared)
         return;
     LARGE_INTEGER drawT0{};
@@ -5277,9 +5428,15 @@ DWORD WINAPI StartBridge(void*)
 
 // BO1 perk mask set by BO1Z (1 = Juggernog, 4 = Speed Cola, 8 = Double Tap).
 volatile LONG g_bo1Perks = 0;
+// Last BO1 catalog row equipped through the F10 weapons menu.
+volatile uint32_t g_lastEquippedBo1Row = 0;
 extern "C" __declspec(dllexport) void __cdecl MW2RE4_SetPerks(uint32_t mask)
 {
     g_bo1Perks = (LONG)mask;
+}
+extern "C" __declspec(dllexport) uint32_t __cdecl MW2RE4_GetLastEquippedBo1Row()
+{
+    return g_lastEquippedBo1Row;
 }
 
 // BO1 zombies scoring: every damage event on an enemy is a hit (10 points in
@@ -5290,6 +5447,21 @@ volatile LONG g_hitCount = 0;
 extern "C" __declspec(dllexport) uint32_t __cdecl MW2RE4_GetHits()
 {
     return (uint32_t)g_hitCount;
+}
+
+// Equip a BO1 catalog row as the current weapon (used by Pack-a-Punch).
+extern "C" __declspec(dllexport) void __cdecl MW2RE4_EquipRow(uint32_t row)
+{
+    EquipCatalogWeapon(row);
+}
+
+// Play the 3D perk-bottle drink animation in the runtime (kind 4, no catalog gate).
+// slot: 0 Jugg, 1 Quick Revive, 2 Speed Cola, 3 Double Tap.
+extern "C" __declspec(dllexport) void __cdecl MW2RE4_PlayPerkAnim(int slot)
+{
+    static const uint32_t rows[4] = { 1271u, 1272u, 1273u, 1270u };
+    if (slot < 0 || slot > 3) return;
+    Request(4, rows[slot], false, 0, 1, 0);
 }
 
 // The naked trampoline calls this by its assembler name.

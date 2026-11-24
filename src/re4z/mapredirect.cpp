@@ -44,15 +44,22 @@ void** FindIAT(HMODULE module, const char* wantedDll, const char* wantedFunction
 
 BOOL WINAPI HookCreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES p1, LPSECURITY_ATTRIBUTES p2, BOOL inherit, DWORD flags, LPCVOID env, LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
 {
+    // MW2RE4 sets this only while creating its IW4L child process. Keep the
+    // native map for the runtime session: T5 maps run incompatible GSC and can
+    // exit before the shared-memory guest becomes ready.
+    if (GetEnvironmentVariableW(L"IW4L_RE4_NATIVE_MAP", nullptr, 0) > 0) {
+        Log("BO1Z: preserving native IW4 map for IW4L bridge runtime");
+        return g_orig(app, cmd, p1, p2, inherit, flags, env, dir, si, pi);
+    }
     if (cmd) {
-        // Replace the IW4 map name with a T5 zombie map (zombie_cosmodrome).
+        // Replace the IW4 map name with the light T5 zombie map (Nacht der Untoten).
         const wchar_t* targets[] = { L"mp_subbase", L"mp_rust", L"mp_favela", L"mp_derail", L"mp_invasion" };
         std::wstring patched(cmd);
         for (auto t : targets) {
             auto pos = patched.find(t);
             if (pos != std::wstring::npos) {
-                patched.replace(pos, wcslen(t), L"zombie_cosmodrome");
-                Log("BO1Z: map redirected to zombie_cosmodrome");
+                patched.replace(pos, wcslen(t), L"zombie_cod5_prototype");
+                Log("BO1Z: map redirected to zombie_cod5_prototype");
                 return g_orig(app, const_cast<LPWSTR>(patched.c_str()), p1, p2, inherit, flags, env, dir, si, pi);
             }
         }

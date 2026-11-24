@@ -10,6 +10,7 @@ namespace {
 typedef void (__cdecl* CameraSetFn)(void* cam);
 
 CameraSetFn g_origCameraSet = nullptr;
+CameraPoint g_latestCamera = {};
 volatile LONG g_fpsEnabled = 1;
 volatile LONG g_eyeHeightBits = 0;   // set at init: 1550.0f
 volatile LONG g_fovBits = 0;         // set at init: 75.0f
@@ -134,6 +135,12 @@ void __cdecl CameraSetHook(void* cam) {
         SetPlayerPartsVisible(true);
     }
 
+    // Publish the frame's camera for world-space overlays (mystery box). When
+    // the FPS hook is off, read the camera directly from the game object.
+    if (cam) {
+        const CameraPoint* src = (const CameraPoint*)((const uint8_t*)cam + 0xA4);
+        g_latestCamera = *src;
+    }
     if (g_origCameraSet) {
         g_origCameraSet(cam);
     }
@@ -143,6 +150,10 @@ void __cdecl CameraSetHook(void* cam) {
 
 bool Camera_IsEnabled() {
     return g_fpsEnabled != 0;
+}
+
+const CameraPoint& Camera_GetLatest() {
+    return g_latestCamera;
 }
 
 bool InstallCameraHook(HMODULE gameModule) {

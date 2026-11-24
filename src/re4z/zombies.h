@@ -43,6 +43,13 @@ struct ZombiesHud {
     bool perkOwned[4] = {};
     float perkPop[4] = {};
     bool perkMenu = false;
+    bool packaPunched = false;
+    int packaWeaponId = 0;
+    // Mystery Box: 3D weapons spinning over the open box.
+    bool boxSpinning = false;
+    bool boxWaiting = false;   // chosen weapon hovering, F to take it
+    float boxSpin = 0.0f;
+    int boxResult = 0;
 };
 
 void Zombies_Update();
