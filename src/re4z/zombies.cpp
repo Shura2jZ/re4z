@@ -832,7 +832,7 @@ void Zombies_Update() {
                                 int cnt = 6;
                                 switch (g_boxResult) {
                                     case 6: cat = "wpck_raygun"; cnt = 6; break;
-                                    case 7: cat = "wpck_launcher"; cnt = 3; break;
+                                    case 7: cat = "wpck_thunder"; cnt = 5; break;  // Thundergun
                                     case 9: cat = "wpck_shotgun"; cnt = 7; break;
                                     case 10: cat = "wpck_mg"; cnt = 9; break;
                                     case 12: cat = "wpck_sniper"; cnt = 6; break;
@@ -988,14 +988,15 @@ void Zombies_Update() {
         // every 5th kill burst, kill_ray/kill_crawler/kill_explo/kill_insta on the
         // matching special kills. At most one line every 2.5 s.
         static DWORD lastVox = 0;
-        static int closeIdx = 0, headIdx = 0, streakIdx = 0;
+        static int closeIdx = 0, headIdx = 0, streakIdx = 0, thunderIdx = 0;
         static int crawlerIdx = 0, exploIdx = 0, instaIdx = 0, damagedIdx = 0;
         if (GetTickCount() - lastVox > 2500) {
             lastVox = GetTickCount();
             char vox[64];
             const char* cat = "kill_close";
             int maxN = 9, *pIdx = &closeIdx;
-            if (deadNow >= 3) { cat = "kill_streak"; maxN = 10; pIdx = &streakIdx; }
+            if (g_kills > 0 && (g_kills % 10) == 0) { cat = "kill_thunder"; maxN = 5; pIdx = &thunderIdx; }
+            else if (deadNow >= 3) { cat = "kill_streak"; maxN = 10; pIdx = &streakIdx; }
             else if (g_hitmarkerKill) { cat = "kill_headshot"; maxN = 10; pIdx = &headIdx; }
             snprintf(vox, sizeof(vox), "dempsey_%s_%d.wav", cat, (*pIdx) % maxN);
             (*pIdx) = ((*pIdx) + 1) % maxN;
