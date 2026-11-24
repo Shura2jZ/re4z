@@ -324,6 +324,7 @@ static void DrawLoaded(IDirect3DDevice9* device, Model& m, const D3DMATRIX& worl
                 (float)bd.Width / bd.Height);
             Log("cam D3D: view t=(%.1f %.1f %.1f) proj=(%.4f %.4f %.4f %.4f)",
                 dv._41, dv._42, dv._43, dp._11, dp._22, dp._34, dp._44);
+            Vec3 pp{}; if (ReadPlayerPos(&pp)) Log("cam: player pos=(%.0f %.0f %.0f)", pp.x, pp.y, pp.z);
             Log("cam: F9 toggles GX aspect, F10 toggles D3D transforms (currently %s)",
                 useD3D ? "D3D" : "GX");
         }
