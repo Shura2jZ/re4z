@@ -20,15 +20,16 @@ What works so far:
   cycling above the box, press F to take the chosen gun.
 - Chalk wall-buy drawings taken from the BO1 game files, fixed in the world.
 - World objects use BO1 models placed in RE4's 3D scene with the game's depth buffer.
+- Bottle-drinking animation for perks (Perk-a-Cola).
+- Reliable damage: every shot that hits kills as expected (no more intermittent
+  damage).
 
 What does not work yet:
-- Bottle-drinking animation for perks.
 - Real wave spawning driven by the BO1 round budget.
 - Special enemies (dogs) every 5 rounds.
 - Spawn at the village centre (deferred).
 - World models drift slightly when the camera moves (under investigation).
 - Some zombies render invisible while the MW2 runtime is active (under investigation).
-- Intermittent damage (some shots do not kill) — under investigation.
 
 ## Building
 
