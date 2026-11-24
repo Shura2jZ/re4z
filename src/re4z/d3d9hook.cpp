@@ -67,6 +67,11 @@ HRESULT WINAPI HookPresent(IDirect3DDevice9* device, const RECT* src, const RECT
     if (device && device == g_device) {
         static bool logged = false;
         if (!logged) { Log("HookPresent called, device=%p g_device=%p", device, g_device); logged = true; }
+        // Draw world objects here, at Present: this is the last point in the
+        // frame, so the GX camera matrices match the camera the scene was
+        // rendered with. Drawing at StretchRect used a stale matrix and made
+        // the models slide when the camera moved.
+        Overlay_DrawWorldModels(device);
         Overlay_Render(device);
     }
     return g_origPresent(device, src, dst, destWindow, dirtyRegion);
@@ -81,9 +86,8 @@ HRESULT WINAPI HookStretchRect(IDirect3DDevice9* device, IDirect3DSurface9* src,
     if (device == g_device && !g_worldDrawnThisFrame && src) {
         IDirect3DSurface9* bb = nullptr;
         if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
-            if (bb == src) {  // this is the end of the 3D pass
+            if (bb == src) {  // end of the 3D pass — mark only, draw at Present
                 g_worldDrawnThisFrame = true;
-                Overlay_DrawWorldModels(device);
             }
             bb->Release();
         }

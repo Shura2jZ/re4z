@@ -88,8 +88,7 @@ static void PowerupCollect(int type) {
     snprintf(vox, sizeof(vox), "powerup_%s", kPowerupVox[type]);
     int n = (type == 3 || type == 4) ? 3 : ((type == 1) ? 4 : 3);
     DempseyVox(vox, n, voxIdx[type]);
-    MciPlay("pwgrab", "bo1_perk_drink.wav");
-    if (type == 4) MciPlay("firesale", "bo1_mysterybox_music.wav");
+    MciPlay("pwgrab", "pwpickup.wav");
     Log("powerup: collected type %d, active 30s", type);
 }
 
@@ -533,22 +532,40 @@ int ScanEnemies(void* player, int maxAlive, int targetHp, int* alivePtr, int* de
 // global kill counter, but an enemy that leaves the live list is a kill.
 struct KillTracker {
     uintptr_t seen[512];
+    float pos[512][3];
     int count = 0;
 
     void Reset() { count = 0; }
 
     // Adds the current live list; returns how many known enemies disappeared.
-    int Update(const uintptr_t* live, int liveCount) {
+    // lastDeath receives the world position of the most recent one.
+    int Update(const uintptr_t* live, int liveCount, float lastDeath[3]) {
         int dead = 0;
         for (int i = 0; i < count; ++i) {
             bool found = false;
             for (int j = 0; j < liveCount; ++j) {
                 if (seen[i] == live[j]) { found = true; break; }
             }
-            if (!found) ++dead;
+            if (!found) {
+                ++dead;
+                if (lastDeath) {
+                    lastDeath[0] = pos[i][0];
+                    lastDeath[1] = pos[i][1];
+                    lastDeath[2] = pos[i][2];
+                }
+            }
         }
         count = liveCount < 512 ? liveCount : 512;
-        for (int i = 0; i < count; ++i) seen[i] = live[i];
+        for (int i = 0; i < count; ++i) {
+            seen[i] = live[i];
+            const uint8_t* em = (const uint8_t*)live[i];
+            if (IsRangeReadable(em, 0xA0)) {
+                const float* p = (const float*)(em + 0x94);
+                if (std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2])) {
+                    pos[i][0] = p[0]; pos[i][1] = p[1]; pos[i][2] = p[2];
+                }
+            }
+        }
         return dead;
     }
 };
@@ -1038,9 +1055,15 @@ void Zombies_Update() {
 
     // Kill counter: RE4 has no global kill count, so the ASI tracks the live
     // enemy list and counts the enemies that disappear from it.
-    const int deadNow = g_killTracker.Update(live, aliveEnemies);
+    float deathPos[3] = {};
+    const int deadNow = g_killTracker.Update(live, aliveEnemies, deathPos);
+    static bool g_powerupSpawnedThisKill = false;
+    g_powerupSpawnedThisKill = false;
     if (deadNow > 0) {
         g_kills += deadNow;
+        // Power-up drops at the zombie's death spot (100% for testing).
+        g_powerupSpawnedThisKill =
+            PowerupSpawn(deathPos[0], deathPos[1], deathPos[2]) >= 0;
         // Tank Dempsey kill quips (plr0, zombie_cosmodrome / Nacht). Variety:
         // kill_close most of the time, kill_headshot on a headshot kill, kill_streak
         // every 5th kill burst, kill_ray/kill_crawler/kill_explo/kill_insta on the
@@ -1048,7 +1071,7 @@ void Zombies_Update() {
         static DWORD lastVox = 0;
         static int closeIdx = 0, headIdx = 0, streakIdx = 0, thunderIdx = 0;
         static int crawlerIdx = 0, exploIdx = 0, instaIdx = 0, damagedIdx = 0;
-        if (GetTickCount() - lastVox > 2500) {
+        if (GetTickCount() - lastVox > 2500 && !g_powerupSpawnedThisKill) {
             lastVox = GetTickCount();
             char vox[64];
             const char* cat = "kill_close";
@@ -1061,11 +1084,6 @@ void Zombies_Update() {
             PlayGameSound(vox);
             Log("vox: %s (kills=%d, deadNow=%d)", vox, g_kills, deadNow);
         }
-        // Power-ups drop from killed zombies and are collected by walking over them.
-        if (deadNow > 0) {  // 100% for testing
-            Vec3 pp{};
-            if (ReadPlayerPos(&pp)) PowerupSpawn(pp.x, pp.y, pp.z);
-        }
     }
     {
         Vec3 pp{};
@@ -1076,7 +1094,7 @@ void Zombies_Update() {
             if (!d.active) continue;
             if (nowT - d.born > 30000) { d.active = false; continue; }
             anyDrop = true;
-            if (havePos) {
+            if (havePos && nowT - d.born > 1500) {
                 const float dx = pp.x - d.x, dz = pp.z - d.z;
                 if (dx * dx + dz * dz < 400.0f * 400.0f) {
                     d.active = false;
