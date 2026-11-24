@@ -303,8 +303,15 @@ static void DrawLoaded(IDirect3DDevice9* device, Model& m, const D3DMATRIX& worl
     D3DMATRIX view{}, proj{};
     if (!bd.Height || !CameraMatrices(g, (float)bd.Width / bd.Height, view, proj)) { bb->Release(); return; }
 
-    // One-shot camera dump: lets us see whether the GX matrices match the D3D
-    // transforms the game actually rendered with (the cause of model drift).
+    // One-shot camera dump + manual D3D-vs-GX toggle (F10).
+    // F9 (handled inside CameraMatrices) toggles the GX aspect correction.
+    // F10 toggles use of the game's actual D3D view/projection matrices instead
+    // of the GX-derived ones: those are what the game rendered the scene with,
+    // so they should eliminate any drift. Falls back to GX if they look invalid.
+    static bool useD3D = false, prevF10 = false;
+    const bool f10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+    if (f10 && !prevF10) useD3D = !useD3D;
+    prevF10 = f10;
     {
         static bool logged = false;
         if (!logged) {
@@ -317,7 +324,19 @@ static void DrawLoaded(IDirect3DDevice9* device, Model& m, const D3DMATRIX& worl
                 (float)bd.Width / bd.Height);
             Log("cam D3D: view t=(%.1f %.1f %.1f) proj=(%.4f %.4f %.4f %.4f)",
                 dv._41, dv._42, dv._43, dp._11, dp._22, dp._34, dp._44);
+            Log("cam: F9 toggles GX aspect, F10 toggles D3D transforms (currently %s)",
+                useD3D ? "D3D" : "GX");
         }
+    }
+    if (useD3D) {
+        D3DMATRIX dv{}, dp{};
+        device->GetTransform(D3DTS_VIEW, &dv);
+        device->GetTransform(D3DTS_PROJECTION, &dp);
+        // Basic validity: a real perspective projection has _34 near +-1 and _44 near 0.
+        const bool valid = (fabsf(dp._34) > 0.5f) && (fabsf(dp._44) < 0.01f) &&
+                           (fabsf(dv._41) + fabsf(dv._42) + fabsf(dv._43) > 1.0f);
+        if (valid) { view = dv; proj = dp; }
+        else Log("cam: D3D transforms invalid, staying on GX");
     }
 
     if (g_sb && g_sbDev != device) { g_sb->Release(); g_sb = nullptr; }
