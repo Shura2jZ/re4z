@@ -355,7 +355,7 @@ const Skin kSkins[] = {
     { "Task Force 141 (snow)", "mp_derail", false },
     { "US Army Rangers", "mp_invasion", false },
     { "Navy SEALs", "mp_subbase", false },
-    { "BO1 Zombies (Nacht der Untoten)", "zombie_cod5_prototype", false },
+    { "BO1 Zombies (native weapons)", "mp_subbase", false },
     { "Leon (jacket)", "mp_subbase", true },
 };
 constexpr int kSkinCount = sizeof(kSkins) / sizeof(kSkins[0]);

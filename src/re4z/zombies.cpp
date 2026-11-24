@@ -815,9 +815,9 @@ void Zombies_Update() {
                                 // Registry rows from bo1_catalog.h (T5 common_zombie).
                                 static const uint32_t kRows[16] = {
                                     1239, 1248, 1196, 1235, 1230, 1255,
-                                    1257, 1242, 1252, 1263, 1225, 1233,
+                                    1257, 1309, 1252, 1263, 1225, 1233,
                                     1213, 1196,
-                                    1257, 1256
+                                    1287, 1286
                                 };
                                 if (!g_mw2EquipRow) g_mw2EquipRow = ResolveEquipRow();
                                 if (g_mw2EquipRow && g_boxResult >= 0 && g_boxResult < 16) {
@@ -997,7 +997,7 @@ void Zombies_Update() {
             int maxN = 9, *pIdx = &closeIdx;
             if (g_kills > 0 && (g_kills % 10) == 0) { cat = "kill_thunder"; maxN = 5; pIdx = &thunderIdx; }
             else if (deadNow >= 3) { cat = "kill_streak"; maxN = 10; pIdx = &streakIdx; }
-            else if (g_hitmarkerKill) { cat = "kill_headshot"; maxN = 10; pIdx = &headIdx; }
+            else if (h.hitmarkerKill) { cat = "kill_headshot"; maxN = 10; pIdx = &headIdx; }
             snprintf(vox, sizeof(vox), "dempsey_%s_%d.wav", cat, (*pIdx) % maxN);
             (*pIdx) = ((*pIdx) + 1) % maxN;
             PlayGameSound(vox);
