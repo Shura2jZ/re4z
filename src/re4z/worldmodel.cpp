@@ -309,7 +309,7 @@ static void DrawLoaded(IDirect3DDevice9* device, Model& m, const D3DMATRIX& worl
     // of the GX-derived ones: those are what the game rendered the scene with,
     // so they should eliminate any drift. Falls back to GX if they look invalid.
     // (F10 is already bound to the weapon list, F9 to the GX aspect toggle.)
-    static bool useD3D = true, prevF11 = false;
+    static bool useD3D = false, prevF11 = false;
     const bool f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
     if (f11 && !prevF11) useD3D = !useD3D;
     prevF11 = f11;

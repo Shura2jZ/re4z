@@ -65,13 +65,25 @@ static const char* kPowerupVox[5] = {
 };
 
 static int PowerupSpawn(float x, float y, float z) {
+    // Keep the drop near the player so it is actually visible: a zombie can die
+    // far outside the camera view, and a drop there would never be seen.
+    Vec3 pp{};
+    if (ReadPlayerPos(&pp)) {
+        float dx = x - pp.x, dz = z - pp.z;
+        const float dist2 = dx * dx + dz * dz;
+        if (dist2 > 900.0f * 900.0f) {
+            const float inv = 900.0f / sqrtf(dist2);
+            x = pp.x + dx * inv;
+            z = pp.z + dz * inv;
+        }
+    }
     for (DroppedPowerup& d : g_drops) {
         if (d.active) continue;
         d.active = true;
         d.type = rand() % 5;
-        d.x = x + ((float)(rand() % 1200) - 600.0f);
+        d.x = x + ((float)(rand() % 400) - 200.0f);
         d.y = y;
-        d.z = z + ((float)(rand() % 1200) - 600.0f);
+        d.z = z + ((float)(rand() % 400) - 200.0f);
         d.born = GetTickCount();
         MciPlay("pwspawn", "bo1_mysterybox_move.wav");
         MciPlay("halo", "pwhalo.wav");
@@ -89,6 +101,11 @@ static void PowerupCollect(int type) {
     int n = (type == 3 || type == 4) ? 3 : ((type == 1) ? 4 : 3);
     DempseyVox(vox, n, voxIdx[type]);
     MciPlay("pwgrab", "pwpickup.wav");
+    static const char* kAnn[5] = {
+        "ann_ann_instakill.wav", "ann_ann_nuke.wav", "ann_ann_maxammo.wav",
+        "ann_ann_doublepoints.wav", "ann_firesale_short.wav"
+    };
+    if (type >= 0 && type < 5) MciPlay("ann", kAnn[type]);
     Log("powerup: collected type %d, active 30s", type);
 }
 
