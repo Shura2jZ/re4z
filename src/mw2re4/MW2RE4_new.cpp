@@ -853,6 +853,11 @@ bool StartRuntime()
     // cg_draw2D 0 turns off MW2's own 2D HUD (minimap, weapon bar, ammo,
     // grenades): BO1Z.asi draws the BO1 zombies HUD over the frame instead.
     SetEnvironmentVariableW(L"IW4L_SCRIPT_DVARS", L"set scr_dm_timelimit 0; set scr_dm_scorelimit 0; set scr_war_timelimit 0; set scr_war_scorelimit 0; set cg_draw2D 0");
+    // Extra native BO1 weapon donors: the runtime's generic T5 common walker
+    // captures their real weapon definitions (Thundergun / Wunderwaffe) and all
+    // dependencies. Reversible: remove the variable to restore stock behaviour.
+    SetEnvironmentVariableW(L"IW4L_T5_EXTRA_WEAPON_ZONES",
+                            L"zombie_cod5_factory,zombie_cod5_prototype");
     SetEnvironmentVariableW(L"IW4L_IMAGE_DECODE_BUDGET_MIB", L"128");
     SetEnvironmentVariableW(L"IW4L_RE4_LEON_STYLE", kSkins[g_cfg.skin].leon ? L"1" : nullptr);
     // the player's own paintings of the arms images (<image>.png), used instead of the automatic Leon paint
