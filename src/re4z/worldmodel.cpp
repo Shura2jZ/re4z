@@ -305,13 +305,14 @@ static void DrawLoaded(IDirect3DDevice9* device, Model& m, const D3DMATRIX& worl
 
     // One-shot camera dump + manual D3D-vs-GX toggle (F10).
     // F9 (handled inside CameraMatrices) toggles the GX aspect correction.
-    // F10 toggles use of the game's actual D3D view/projection matrices instead
+    // F11 toggles use of the game's actual D3D view/projection matrices instead
     // of the GX-derived ones: those are what the game rendered the scene with,
     // so they should eliminate any drift. Falls back to GX if they look invalid.
-    static bool useD3D = false, prevF10 = false;
-    const bool f10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-    if (f10 && !prevF10) useD3D = !useD3D;
-    prevF10 = f10;
+    // (F10 is already bound to the weapon list, F9 to the GX aspect toggle.)
+    static bool useD3D = false, prevF11 = false;
+    const bool f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+    if (f11 && !prevF11) useD3D = !useD3D;
+    prevF11 = f11;
     {
         static bool logged = false;
         if (!logged) {
@@ -325,7 +326,7 @@ static void DrawLoaded(IDirect3DDevice9* device, Model& m, const D3DMATRIX& worl
             Log("cam D3D: view t=(%.1f %.1f %.1f) proj=(%.4f %.4f %.4f %.4f)",
                 dv._41, dv._42, dv._43, dp._11, dp._22, dp._34, dp._44);
             Vec3 pp{}; if (ReadPlayerPos(&pp)) Log("cam: player pos=(%.0f %.0f %.0f)", pp.x, pp.y, pp.z);
-            Log("cam: F9 toggles GX aspect, F10 toggles D3D transforms (currently %s)",
+            Log("cam: F9 toggles GX aspect, F11 toggles D3D transforms (currently %s)",
                 useD3D ? "D3D" : "GX");
         }
     }
