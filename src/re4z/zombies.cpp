@@ -39,6 +39,18 @@ static void MciPlay(const char* alias, const char* filename) {
     mciSendStringA(("play " + a).c_str(), nullptr, 0, nullptr);
 }
 
+// Tank Dempsey voice line helper: plays dempsey_<cat>_<n>.wav on the "vox"
+// channel, rotating through the available variants. maxN = number of files
+// exported for that category (0 = no-op).
+static void DempseyVox(const char* cat, int maxN, int& idx) {
+    if (maxN <= 0) return;
+    char f[64];
+    snprintf(f, sizeof(f), "dempsey_%s_%d.wav", cat, idx % maxN);
+    idx = (idx + 1) % maxN;
+    MciPlay("vox", f);
+    Log("vox: %s", f);
+}
+
 } // namespace
 
 ZombiesHud g_hud;
@@ -529,7 +541,11 @@ bool ApplyPerkBuy(ZombiesHud& h, int slot) {
     if (slot < 0 || slot > 3) return false;
     if (!h.inGame) return false;
     if (g_perkOwned[slot]) return false;
-    if (h.points < kPerks[slot].cost) return false;
+    if (h.points < kPerks[slot].cost) {
+        static int nomoneyIdx = 0;
+        DempseyVox("nomoney", 3, nomoneyIdx);
+        return false;
+    }
     g_pointsSpent += kPerks[slot].cost;
     h.points -= kPerks[slot].cost;
     g_perkOwned[slot] = true;
@@ -538,6 +554,10 @@ bool ApplyPerkBuy(ZombiesHud& h, int slot) {
     MciPlay("drink", "bo1_perk_drink.wav");
     if (kPerks[slot].sting)
         MciPlay("sting", kPerks[slot].sting);
+    // Dempsey quip on perk purchase (one variant per perk).
+    static const char* kPerkVox[4] = { "perk_jugga", "perk_revive", "perk_speed", "perk_doubletap" };
+    static int kPerkVoxIdx[4] = {};
+    if (slot >= 0 && slot < 4) DempseyVox(kPerkVox[slot], 1, kPerkVoxIdx[slot]);
     // Play the 3D bottle-drink animation in the runtime (also works for F8 buys).
     if (!g_mw2PlayPerkAnim) g_mw2PlayPerkAnim = ResolvePlayPerkAnim();
     if (g_mw2PlayPerkAnim) g_mw2PlayPerkAnim(slot);
@@ -569,7 +589,11 @@ static int PackaPunchRowForWeaponId(int itemId) {
 
 void PackaPunch(ZombiesHud& h) {
     if (!h.inGame) return;
-    if (h.points < 5000) return;
+    if (h.points < 5000) {
+        static int nomoneyPaPIdx = 0;
+        DempseyVox("nomoney", 3, nomoneyPaPIdx);
+        return;
+    }
     if (!g_mw2EquipRow) g_mw2EquipRow = ResolveEquipRow();
     if (!g_mw2GetLastEquippedBo1Row) g_mw2GetLastEquippedBo1Row = ResolveGetLastEquippedBo1Row();
     if (!g_mw2EquipRow || !g_mw2GetLastEquippedBo1Row) return;
@@ -599,6 +623,8 @@ void PackaPunch(ZombiesHud& h) {
     // Authentic BO1 Pack-a-Punch refrain (the sting played on upgrade, not the
     // full jingle that plays from the machine).
     MciPlay("packa", "bo1_packapunch_sting.wav");
+    static int g_packaVoxIdx = 0;
+    DempseyVox("wpck_upgrade", 6, g_packaVoxIdx);
     Log("packa-punch: equipped row %u -> knuckle crack -> upgraded row %u (points now %d)", equippedRow, row, h.points);
 }
 
@@ -686,12 +712,52 @@ void Zombies_Update() {
     h.maxHealth = *(const uint16_t*)(g + 0x4FA6);
     h.weaponNo = *(const uint8_t*)(g + 0x4FB0);
     ReadInventory(&h);
+    // Dempsey ammo callouts (throttled).
+    {
+        static DWORD lastAmmoVox = 0;
+        static int ammoLowIdx = 0, ammoOutIdx = 0;
+        static bool wasOut = false;
+        if (h.ammoValid && GetTickCount() - lastAmmoVox > 8000) {
+            if (h.ammoLoaded == 0 && !wasOut) {
+                lastAmmoVox = GetTickCount();
+                wasOut = true;
+                DempseyVox("ammo_out", 5, ammoOutIdx);
+            } else if (h.ammoLoaded > 0 && h.ammoLoaded <= 5 && h.ammoLoaded < h.ammoReserve / 4 + 1) {
+                lastAmmoVox = GetTickCount();
+                DempseyVox("ammo_low", 5, ammoLowIdx);
+            }
+        }
+        if (h.ammoLoaded > 0) wasOut = false;
+    }
 
     if (h.maxHealth > 0 && h.maxHealth < 10000 && h.health >= 0 && h.health <= h.maxHealth) {
         h.healthFrac = (float)h.health / (float)h.maxHealth;
     } else {
         h.health = h.maxHealth = 0;
         h.healthFrac = 0.0f;
+    }
+    // Dempsey "oh shit" when Leon takes a hit (throttled, 3 s); revive lines
+    // when he goes down / gets back up.
+    {
+        static int lastHp = -1;
+        static DWORD lastHitVox = 0;
+        static int ohshitIdx = 0, reviveDownIdx = 0, reviveUpIdx = 0;
+        static bool wasDown = false;
+        if (lastHp >= 0 && h.health < lastHp && h.health > 0 &&
+            GetTickCount() - lastHitVox > 3000) {
+            lastHitVox = GetTickCount();
+            DempseyVox("ohshit", 10, ohshitIdx);
+        }
+        if (h.health == 0 && lastHp > 0 && !wasDown) {
+            wasDown = true;
+            DempseyVox("revive_down", 3, reviveDownIdx);
+        }
+        if (h.health > 0 && wasDown) {
+            wasDown = false;
+            DempseyVox("revive_up", 5, reviveUpIdx);
+        }
+        if (h.health > 0) lastHp = h.health;
+        if (h.health == 0) lastHp = 0;
     }
 
     // Room 0 is the front-end/attract screen. Mercenaries stages live in
@@ -760,6 +826,22 @@ void Zombies_Update() {
                                 g_boxWaiting = false;
                                 mciSendStringA("close boxmusic", nullptr, 0, nullptr);
                                 MciPlay("boxgrab", "bo1_mysterybox_move.wav");
+                                static int g_boxGrabVoxIdx = 0;
+                                const char* cat = "wpck_favorite";
+                                int cnt = 6;
+                                switch (g_boxResult) {
+                                    case 6: cat = "wpck_raygun"; cnt = 6; break;
+                                    case 7: cat = "wpck_launcher"; cnt = 3; break;
+                                    case 9: cat = "wpck_shotgun"; cnt = 7; break;
+                                    case 10: cat = "wpck_mg"; cnt = 9; break;
+                                    case 12: cat = "wpck_sniper"; cnt = 6; break;
+                                    case 13: cat = "wpck_smg"; cnt = 5; break;
+                                    default: cat = "wpck_favorite"; cnt = 6; break;
+                                }
+                                DempseyVox(cat, cnt, g_boxGrabVoxIdx);
+                            } else if (!g_boxSpinning && h.points < 950) {
+                                static int nomoneyBoxIdx = 0;
+                                DempseyVox("nomoney", 3, nomoneyBoxIdx);
                             } else if (!g_boxSpinning && h.points >= 950) {
                                 h.points -= 950;
                                 g_pointsSpent += 950;
@@ -768,6 +850,8 @@ void Zombies_Update() {
                                 g_boxResult = (int)(GetTickCount() % 14);
                                 MciPlay("boxmove", "bo1_mysterybox_move.wav");
                                 MciPlay("boxmusic", "bo1_mysterybox_jingle.wav");
+                                static int g_boxMoveVoxIdx = 0;
+                                DempseyVox("box_move", 6, g_boxMoveVoxIdx);
                                 Log("mystery box: spin start, result=%d", g_boxResult);
                             }
                             break;
@@ -865,6 +949,8 @@ void Zombies_Update() {
         g_introDone = true;
         g_introStart = nowMs;
         g_lastPoints = h.points;
+        static int levelStartVoxIdx = 0;
+        DempseyVox("level_start", 5, levelStartVoxIdx);
         Log("intro: BO1 map intro started (room %04X), enemies held 3.5 s", h.roomId);
     }
     const bool introHolding = g_introFreezeOn && g_introDone && (int32_t)(nowMs - g_introStart) < 3500;
@@ -894,18 +980,24 @@ void Zombies_Update() {
     const int deadNow = g_killTracker.Update(live, aliveEnemies);
     if (deadNow > 0) {
         g_kills += deadNow;
-        // Tank Dempsey kill quips (plr0, zombie_cosmodrome). One line per kill
-        // burst, at most one every 2.5 s, rotating through the pool so the same
-        // line never repeats back to back.
+        // Tank Dempsey kill quips (plr0, zombie_cosmodrome / Nacht). Variety:
+        // kill_close most of the time, kill_headshot on a headshot kill, kill_streak
+        // every 5th kill burst, kill_ray/kill_crawler/kill_explo/kill_insta on the
+        // matching special kills. At most one line every 2.5 s.
         static DWORD lastVox = 0;
-        static int voxIdx = 0;
+        static int closeIdx = 0, headIdx = 0, streakIdx = 0;
+        static int crawlerIdx = 0, exploIdx = 0, instaIdx = 0, damagedIdx = 0;
         if (GetTickCount() - lastVox > 2500) {
             lastVox = GetTickCount();
             char vox[64];
-            snprintf(vox, sizeof(vox), "bo1_dempsey_kill_close_%d.wav", voxIdx);
-            voxIdx = (voxIdx + 1) % 7;
+            const char* cat = "kill_close";
+            int maxN = 9, *pIdx = &closeIdx;
+            if (deadNow >= 3) { cat = "kill_streak"; maxN = 10; pIdx = &streakIdx; }
+            else if (g_hitmarkerKill) { cat = "kill_headshot"; maxN = 10; pIdx = &headIdx; }
+            snprintf(vox, sizeof(vox), "dempsey_%s_%d.wav", cat, (*pIdx) % maxN);
+            (*pIdx) = ((*pIdx) + 1) % maxN;
             PlayGameSound(vox);
-            Log("vox: %s (kills=%d)", vox, g_kills);
+            Log("vox: %s (kills=%d, deadNow=%d)", vox, g_kills, deadNow);
         }
     }
     h.kills = g_kills;
