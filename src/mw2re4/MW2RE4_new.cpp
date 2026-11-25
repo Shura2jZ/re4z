@@ -1534,8 +1534,10 @@ void LogShotTargets(uint32_t sequence)
 
 const char* Bo1ShotSound(uint32_t weapon, const char* name, const char** alias)
 {
-    if (weapon < 1195 || weapon > 1268 || !name || !name[0])
+    if (weapon < 1195 || weapon > 1311 || !name || !name[0])
         return nullptr;
+    if (StartsWithAny(name, { "thundergun" })) { *alias = "bo1_thundergun"; return "bo1_thundergun.wav"; }
+    if (StartsWithAny(name, { "tesla", "wunderwaffe" })) { *alias = "bo1_tesla"; return "bo1_tesla.wav"; }
     if (StartsWithAny(name, { "m1911" })) { *alias = "bo1_colt"; return "bo1_colt.wav"; }
     if (StartsWithAny(name, { "cz75" })) { *alias = "bo1_cz75"; return "bo1_cz75.wav"; }
     if (StartsWithAny(name, { "m14" })) { *alias = "bo1_m14"; return "bo1_m14.wav"; }
